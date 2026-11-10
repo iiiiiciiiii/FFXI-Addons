@@ -24,7 +24,7 @@
 
 addon.name    = 'nard'
 addon.author  = 'Jboor'
-addon.version = '1.2.0'
+addon.version = '1.3.0'
 addon.desc    = 'Floating Corsair roll tracker (Phoenix Lv75) - Theeb theme'
 addon.link    = ''
 
@@ -79,6 +79,8 @@ local defaults = T{
     show_cd    = true,    -- Phantom Roll cooldown pill
     free       = false,   -- separate pieces, each moved on its own
     solo_hide  = true,    -- hide everything when not in a party for a while
+    show_tips  = true,    -- short advice under the cooldowns
+    s_tip      = 1.0,
     solo_mins  = 6,       -- ...this many minutes
     pieces     = T{},     -- saved piece positions / lock state
     cd_warn    = 5,       -- amber warning this many seconds before ready (0 = off)
@@ -478,9 +480,17 @@ local function on_action(act)
         entry.du_until = nil
         dlog.add('BUST', ('%s busted %s%s'):format(entry.actor_name, def.name,
             entry.bust_total and (' at ' .. entry.bust_total) or ''))
+        if mine then
+            state.tip_event = { title = 'BUSTED', col = { 1.00, 0.42, 0.38 }, until_t = anim_time() + 10,
+                lines = { 'The roll is gone and the bust penalty is on you.', 'Roll something new when Phantom Roll is ready.' } }
+        end
     else
         entry.value = total
         if total == 11 then entry.smash_pending = true elseif total == def.lucky then entry.burst_pending = true end
+        if mine and total == 11 then
+            state.tip_event = { title = 'MAX 11', col = { 1.00, 0.77, 0.30 }, until_t = anim_time() + 6,
+                lines = { 'Best result - nothing left to Double-Up.' } }
+        end
         if mine and total < 11 then
             entry.du_until = now + DU_WINDOW
         else
@@ -782,14 +792,14 @@ local function text_size(txt, fscale)
 end
 
 -- x, y are window-relative (same space as SetCursorPos).
-local function text_at(x, y, col, txt, fscale, outline)
+local function text_at(x, y, col, txt, fscale, outline, oa)
     local dl     = imgui.GetWindowDrawList()
     local wx, wy = imgui.GetWindowPos()
     local size   = imgui.GetFontSize() * fscale
     local sx, sy = wx + x, wy + y
     if outline then
         -- full outline so text reads on any background (no frame behind it)
-        local oc = col32({ 0, 0, 0, 0.90 })
+        local oc = col32({ 0, 0, 0, 0.90 * (oa or 1) })
         dl_text(dl, sx + 1, sy + 1, oc, txt, size)
         dl_text(dl, sx - 1, sy + 1, oc, txt, size)
         dl_text(dl, sx + 1, sy - 1, oc, txt, size)
@@ -1972,6 +1982,109 @@ local function draw_cd_ring(dl, wx, wy, x, y, m, S, t, cd, rem, mode)
     if imgui.IsItemHovered() then cd_tooltip() end
 end
 
+----------------------------------------------------------------------------
+-- Tips: short frameless advice under the cooldowns (your own rolls only)
+----------------------------------------------------------------------------
+local TIP_COL = {
+    red   = { 1.00, 0.42, 0.38 }, gold = { 1.00, 0.77, 0.30 }, green = { 0.47, 0.86, 0.55 },
+    amber = { 1.00, 0.67, 0.27 }, blue = { 0.47, 0.75, 1.00 },
+}
+local tip_state = { key = nil, since = 0 }
+
+local function tip_lines_width(tip, S)
+    local w = text_size(tip.title, 0.70 * S) + 13 * S
+    for _, l in ipairs(tip.lines) do w = math.max(w, text_size(l, 0.74 * S)) end
+    return w
+end
+
+-- the tip to show right now, or nil
+local function current_tip(t)
+    if not cfg.show_tips then return nil end
+    local ev = state.tip_event
+    if ev and t < ev.until_t then return ev end
+    state.tip_event = nil
+
+    local now, me = os.time(), my_id()
+    -- Double-Up advice for your newest open roll
+    local open = nil
+    for _, e in ipairs(state.active) do
+        if e.mine and e.du_until and now <= e.du_until and not e.busted and e.value and e.value < 11 then
+            if open == nil or e.started > open.started then open = e end
+        end
+    end
+    if open then
+        local v, def = open.value, open.def
+        local pct = math.floor(rolls.bust_chance(v) * 100 + 0.5)
+        if v == def.lucky then
+            return { title = ('LUCKY %d'):format(v), lines = { 'Stop here - a Double-Up could lose it.' }, col = TIP_COL.gold }
+        elseif v == def.unlucky then
+            if v <= 5 then
+                return { title = ('UNLUCKY %d'):format(v), lines = { ("Double-Up it - you can't bust from %d."):format(v) }, col = TIP_COL.blue }
+            end
+            return { title = ('UNLUCKY %d'):format(v), lines = { ('Worth a Double-Up (bust chance %d%%).'):format(pct) }, col = TIP_COL.blue }
+        elseif v <= 5 then
+            return { title = 'SAFE', lines = { ("You can't bust from %d - Double-Up freely."):format(v) }, col = TIP_COL.green }
+        else
+            return { title = ('BUST %d%%'):format(pct), lines = { ('%d is decent. Double-Up only if you need more.'):format(v) }, col = TIP_COL.amber }
+        end
+    end
+
+    -- one of your rolls is about to wear off
+    local soon = nil
+    for _, e in ipairs(state.active) do
+        if e.mine and not e.busted and not e.unknown then
+            local left = e.started + ROLL_DURATION - now
+            if left > 0 and left <= 30 and (soon == nil or left < soon.left) then soon = { e = e, left = left } end
+        end
+    end
+    if soon then
+        return { title = 'RE-ROLL SOON', lines = { ('%s wears off in %s.'):format(soon.e.def.name, fmt_time(soon.left)) }, col = TIP_COL.amber }
+    end
+
+    -- Phantom Roll is up and you have room for another roll
+    if main_is_cor() and ability_recast(PR_RECAST_ID) <= 0 then
+        local mine_any, on_me = false, 0
+        for _, e in ipairs(state.active) do
+            if e.mine then mine_any = true end
+            if e.targets and e.targets[me] then on_me = on_me + 1 end
+        end
+        if mine_any and on_me < 2 then
+            return { title = 'READY', lines = { 'Phantom Roll is up - you can keep 2 rolls going.' }, col = TIP_COL.green }
+        end
+    end
+    return nil
+end
+
+-- frameless: glowing bulb + coloured title, outlined lines, centered in W; returns height
+local function draw_tip(dl, wx, wy, x, y, W, S, t, tip)
+    local key = tip.title .. '|' .. (tip.lines[1] or '')
+    if key ~= tip_state.key then tip_state.key, tip_state.since = key, t end
+    local a = math.min(1, (t - tip_state.since) / 0.25)
+    if tip.until_t then a = math.min(a, math.max(0, (tip.until_t - t) / 0.4)) end
+    local c = tip.col
+
+    local ts, ls = 0.70 * S, 0.74 * S
+    local tw, th = text_size(tip.title, ts)
+    local bx = x + (W - (tw + 13 * S)) / 2
+    local cx, cy = wx + bx + 3 * S, wy + y + th / 2
+    local glow = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(t * 2.0))
+    dl:AddCircleFilled({ cx, cy }, 6.0 * S, col32({ c[1], c[2], c[3], 0.12 * a * glow }), 16)
+    dl:AddCircleFilled({ cx, cy }, 4.4 * S, col32({ c[1], c[2], c[3], 0.22 * a * glow }), 16)
+    dl:AddCircleFilled({ cx, cy }, 3.2 * S, col32({ c[1], c[2], c[3], a * glow }), 14)
+    dl:AddCircleFilled({ cx - 1 * S, cy - 1 * S }, 1.1 * S, col32({ 1, 1, 1, 0.7 * a * glow }), 8)
+    dl:AddRectFilled({ cx - 1.7 * S, cy + 2.8 * S }, { cx + 1.7 * S, cy + 5.4 * S }, col32({ 0.12, 0.13, 0.16, 0.9 * a }), 1)
+    dl:AddRectFilled({ cx - 1.4 * S, cy + 3.0 * S }, { cx + 1.4 * S, cy + 5.2 * S }, col32({ 0.78, 0.80, 0.84, a }), 1)
+    text_at(bx + 11 * S, y, { c[1], c[2], c[3], a }, tip.title, ts, true, a)
+
+    local ly = y + th + 3 * S
+    for _, l in ipairs(tip.lines) do
+        local lw, lh = text_size(l, ls)
+        text_at(x + (W - lw) / 2, ly, { 0.93, 0.94, 0.96, a }, l, ls, true, a)
+        ly = ly + lh + 1 * S
+    end
+    return ly - y
+end
+
 -- one row of dice (with optional panel + tab label); returns its height
 local function draw_row(dl, wx, wy, bx, y, W, row, m, t, now, hovered)
     local S = m.S
@@ -2034,6 +2147,9 @@ local function draw_overlay_full(list, now)
         W = math.max(W, text_size(EMPTY, 0.85 * S) + 28 * S)
     end
     if cfg.show_cd then W = math.max(W, cd_row_width(S * sz('s_cd')) + 8 * S) end
+    local tip = current_tip(anim_time())
+    local St  = S * sz('s_tip')
+    if tip then W = math.max(W, tip_lines_width(tip, St) + 8 * S) end
     local bx, by = imgui.GetCursorPos()
     local wx, wy = imgui.GetWindowPos()
     local dl     = imgui.GetWindowDrawList()
@@ -2076,6 +2192,11 @@ local function draw_overlay_full(list, now)
     if cfg.show_cd then
         local ph = draw_cd_row(dl, wx, wy, bx, y - 6 * S, W, S * sz('s_cd'), t)
         y = y - 6 * S + ph + ((#rows > 0) and 18 * S or 4 * S)
+    end
+    if tip then
+        if cfg.show_cd then y = y - ((#rows > 0) and 10 * S or 0) end
+        local th = draw_tip(dl, wx, wy, bx, y, W, St, t, tip)
+        y = y + th + ((#rows > 0) and 16 * S or 4 * S)
     end
     if #rows == 0 and not cfg.show_cd then
         local h = 34 * S
@@ -2191,10 +2312,10 @@ end
 -- Right-click a piece -> unlock / lock / reset / join back.
 ----------------------------------------------------------------------------
 local PIECE_NAME = {
-    pr = 'Phantom Roll cooldown', du = 'Double-Up cooldown',
+    pr = 'Phantom Roll cooldown', du = 'Double-Up cooldown', tips = 'Tips',
     MELEE = 'Melee rolls', MAGES = 'Mage rolls', SELF = 'Your rolls', PARTY = 'Party rolls',
 }
-local PIECE_OFF = { pr = 0, du = 26, MELEE = 62, MAGES = 250, SELF = 440, PARTY = 630 }
+local PIECE_OFF = { tips = -46, pr = 0, du = 26, MELEE = 62, MAGES = 250, SELF = 440, PARTY = 630 }
 
 local function piece_default(key)
     return { x = cfg.pos_x, y = cfg.pos_y + (PIECE_OFF[key] or 0) * cfg.scale, unlocked = false }
@@ -2384,6 +2505,16 @@ local function draw_free_layout(list, now)
             end)
         end
     end
+    local tip = current_tip(anim_time())
+    if tip then
+        piece_window('tips', function (dl, wx, wy, bx, by, hovered, unlocked)
+            local St = S * sz('s_tip')
+            local W  = tip_lines_width(tip, St) + 8 * S
+            local th = draw_tip(dl, wx, wy, bx, by + 2 * S, W, St, anim_time(), tip)
+            imgui.SetCursorPos({ bx, by })
+            imgui.Dummy({ W, th + 4 * S + (unlocked and 16 * S or 0) })
+        end)
+    end
     for _, row in ipairs(build_rows(list)) do
         piece_window(row.label, function (dl, wx, wy, bx, by, hovered, unlocked)
             local t = anim_time()
@@ -2556,6 +2687,7 @@ local function draw_config()
                 imgui.PopItemWidth()
                 help_marker('##h_cd_warn', 'Amber pulsing highlight on the cooldown pills this many seconds before they are ready. 0 = off.')
             end
+            opt_checkbox('Show tips', 'show_tips', 'Short advice under the cooldowns for your own rolls: after a bust, when Double-Up is safe or risky, lucky / unlucky numbers, a roll about to wear off, and when Phantom Roll is ready for another roll.')
             opt_checkbox('Hide when solo', 'solo_hide', 'Hide nard completely after you have been out of a party for the time below. It comes back the moment you join a party (or alliance).')
             if cfg.solo_hide then
                 imgui.PushItemWidth(W - 70)
@@ -2579,8 +2711,9 @@ local function draw_config()
             size_slider(W, 'Effect & timer', 's_info', 0.6, 1.8, 'The plate under each die (effect value, timer) and the Double-Up pill.')
             size_slider(W, 'Cooldowns',      's_cd',   0.6, 1.8, 'The Phantom Roll and Double-Up cooldown pills at the top.')
             size_slider(W, 'Effects',        's_fx',   0.3, 1.8, 'Fire height, Lucky explosion and the 11 zoom & smash.')
+            size_slider(W, 'Tips',           's_tip',  0.6, 1.8, 'The advice text under the cooldowns.')
             if imgui.Button('Reset sizes', { 100, 0 }) then
-                cfg.scale, cfg.s_die, cfg.s_name, cfg.s_info, cfg.s_cd, cfg.s_fx = 1, 1, 1, 1, 1, 1
+                cfg.scale, cfg.s_die, cfg.s_name, cfg.s_info, cfg.s_cd, cfg.s_fx, cfg.s_tip = 1, 1, 1, 1, 1, 1, 1
                 settings.save()
                 dlog.add('CFG', 'Sizes reset')
             end

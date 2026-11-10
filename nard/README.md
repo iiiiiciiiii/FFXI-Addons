@@ -13,6 +13,8 @@ Floating **Corsair roll tracker** for Ashita v4 — Phoenix (level 75). by Jboor
 - Party job bonus included in effect values
 - Phantom Roll and Double-Up cooldown pills
 - Real buff check: a roll that wears off early is removed
+- Tips: short advice for your own rolls (after a bust, safe or risky Double-Up, lucky / unlucky, a roll about to wear off, Phantom Roll ready)
+- Hides itself after a few minutes out of a party, back as soon as you join one
 - Separate pieces mode, minimize pill, settings window, debug log
 - Rolls kept across reloads
 
@@ -34,6 +36,7 @@ Copy the `nard` folder (`nard.lua`, `rolls.lua`, `dlog.lua`) into `Ashita/addons
 | `/nard min` | minimize / restore |
 | `/nard lock` / `unlock` | lock position |
 | `/nard free` | separate pieces on / off |
+| `/nard layout reset` | put separated pieces back |
 | `/nard scale <0.6-2.0>` | size |
 | `/nard show` / `hide` | show / hide |
 | `/nard reset` | default position |
