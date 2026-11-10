@@ -1,5 +1,7 @@
 # 6arab (طرب)
 
+> **Why the name?** *6arab* is the Arabic word **طرب** (*tarab*), the joy and emotion you feel from music. It's written in Arabizi, where **6** stands for the Arabic letter **ط**. A fitting name for a Bard's songs.
+
 Floating **Bard song tracker** for Ashita v4 — Phoenix (level 75). Companion to [nard](../nard/). by Jboor
 
 ## Features

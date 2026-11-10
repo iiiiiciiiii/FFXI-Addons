@@ -1,5 +1,7 @@
 # nard (نرد)
 
+> **Why the name?** *nard* is the Arabic word **نرد**, meaning **dice**, like the dice in backgammon. Corsairs roll dice for every Phantom Roll, so the tracker is named after them.
+
 Floating **Corsair roll tracker** for Ashita v4 — Phoenix (level 75). by Jboor
 
 ## Features
