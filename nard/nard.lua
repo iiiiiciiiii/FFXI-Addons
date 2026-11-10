@@ -24,7 +24,7 @@
 
 addon.name    = 'nard'
 addon.author  = 'Jboor'
-addon.version = '1.3.0'
+addon.version = '1.3.1'
 addon.desc    = 'Floating Corsair roll tracker (Phoenix Lv75) - Theeb theme'
 addon.link    = ''
 
@@ -2058,7 +2058,10 @@ end
 -- frameless: glowing bulb + coloured title, outlined lines, centered in W; returns height
 local function draw_tip(dl, wx, wy, x, y, W, S, t, tip)
     local key = tip.title .. '|' .. (tip.lines[1] or '')
-    if key ~= tip_state.key then tip_state.key, tip_state.since = key, t end
+    if key ~= tip_state.key then
+        tip_state.key, tip_state.since = key, t
+        dlog.add('TIP', ('%s - %s  (drawn at %d,%d)'):format(tip.title, tip.lines[1] or '', wx + x, wy + y))
+    end
     local a = math.min(1, (t - tip_state.since) / 0.25)
     if tip.until_t then a = math.min(a, math.max(0, (tip.until_t - t) / 0.4)) end
     local c = tip.col
@@ -2303,8 +2306,16 @@ local function draw_overlay_compact(list, now)
         settings.save()
         dlog.add('UI', 'Overlay restored')
     end
+    local tip = current_tip(anim_time())
+    local tiph = 0
+    if tip then
+        local St = S * sz('s_tip')
+        local tw = tip_lines_width(tip, St)
+        tiph = draw_tip(dl, wx, wy, bx + (w - math.max(w, tw)) / 2, by + h + 5 * S, math.max(w, tw), St, anim_time(), tip) + 5 * S
+        w = math.max(w, tw)
+    end
     imgui.SetCursorPos({ bx, by })
-    imgui.Dummy({ w, h })
+    imgui.Dummy({ w, h + tiph })
 end
 
 ----------------------------------------------------------------------------
@@ -2318,12 +2329,20 @@ local PIECE_NAME = {
 local PIECE_OFF = { tips = -46, pr = 0, du = 26, MELEE = 62, MAGES = 250, SELF = 440, PARTY = 630 }
 
 local function piece_default(key)
-    return { x = cfg.pos_x, y = cfg.pos_y + (PIECE_OFF[key] or 0) * cfg.scale, unlocked = false }
+    if key == 'tips' and type(cfg.pieces) == 'table' and type(cfg.pieces.pr) == 'table' and tonumber(cfg.pieces.pr.y) then
+        return { x = cfg.pieces.pr.x, y = math.max(10, cfg.pieces.pr.y - 50 * cfg.scale), unlocked = false }
+    end
+    return { x = cfg.pos_x, y = math.max(10, cfg.pos_y + (PIECE_OFF[key] or 0) * cfg.scale), unlocked = false }
 end
 
 local function piece(key)
     if type(cfg.pieces) ~= 'table' then cfg.pieces = {} end
     local p = cfg.pieces[key]
+    if key == 'tips' and type(p) == 'table' and not cfg.tips_placed then
+        p = nil                                   -- one-time move off the v1.3.0 spot
+        state.piece_reset.tips = true
+    end
+    if key == 'tips' then cfg.tips_placed = true end
     if type(p) ~= 'table' or tonumber(p.x) == nil or tonumber(p.y) == nil then
         p = piece_default(key)
         cfg.pieces[key] = p
