@@ -24,7 +24,7 @@
 
 addon.name    = 'nard'
 addon.author  = 'Jboor'
-addon.version = '1.3.1'
+addon.version = '1.3.2'
 addon.desc    = 'Floating Corsair roll tracker (Phoenix Lv75) - Theeb theme'
 addon.link    = ''
 
@@ -1991,10 +1991,26 @@ local TIP_COL = {
 }
 local tip_state = { key = nil, since = 0 }
 
+local TIP_TS, TIP_LS = 0.92, 1.0   -- title / line font scale (1.0 = native size, sharpest)
+
 local function tip_lines_width(tip, S)
-    local w = text_size(tip.title, 0.70 * S) + 13 * S
-    for _, l in ipairs(tip.lines) do w = math.max(w, text_size(l, 0.74 * S)) end
-    return w
+    local w = text_size(tip.title, TIP_TS * S) + 15 * S
+    for _, l in ipairs(tip.lines) do w = math.max(w, text_size(l, TIP_LS * S)) end
+    return w + 16 * S
+end
+
+-- thick 8-way outline so small text stays sharp on any background
+local function tip_text(x, y, col, txt, sc, a)
+    local dl     = imgui.GetWindowDrawList()
+    local wx, wy = imgui.GetWindowPos()
+    local size   = imgui.GetFontSize() * sc
+    local sx, sy = wx + x, wy + y
+    local oc = col32({ 0, 0, 0, 0.95 * a })
+    for _, o in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 }, { 1, 1 }, { -1, 1 }, { 1, -1 }, { -1, -1 } }) do
+        dl_text(dl, sx + o[1], sy + o[2], oc, txt, size)
+    end
+    dl_text(dl, sx + 1, sy + 2, col32({ 0, 0, 0, 0.55 * a }), txt, size)   -- soft drop shadow
+    dl_text(dl, sx, sy, col32(col), txt, size)
 end
 
 -- the tip to show right now, or nil
@@ -2066,9 +2082,23 @@ local function draw_tip(dl, wx, wy, x, y, W, S, t, tip)
     if tip.until_t then a = math.min(a, math.max(0, (tip.until_t - t) / 0.4)) end
     local c = tip.col
 
-    local ts, ls = 0.70 * S, 0.74 * S
+    local ts, ls = TIP_TS * S, TIP_LS * S
     local tw, th = text_size(tip.title, ts)
-    local bx = x + (W - (tw + 13 * S)) / 2
+
+    -- soft dark haze behind the text (no edges, just a gentle shadow)
+    local bw = 0
+    for _, l in ipairs(tip.lines) do bw = math.max(bw, (text_size(l, ls))) end
+    bw = math.max(bw, tw + 15 * S)
+    local _, lh0 = text_size('A', ls)
+    local bh = th + 3 * S + #tip.lines * (lh0 + 1 * S)
+    local hx0, hy0 = wx + x + (W - bw) / 2, wy + y
+    for k = 4, 1, -1 do
+        local g = k * 4 * S
+        dl:AddRectFilled({ hx0 - g, hy0 - g * 0.6 }, { hx0 + bw + g, hy0 + bh + g * 0.6 },
+            col32({ 0.02, 0.02, 0.04, 0.085 * a }), bh / 2 + g)
+    end
+
+    local bx = x + (W - (tw + 15 * S)) / 2
     local cx, cy = wx + bx + 3 * S, wy + y + th / 2
     local glow = 0.6 + 0.4 * (0.5 + 0.5 * math.sin(t * 2.0))
     dl:AddCircleFilled({ cx, cy }, 6.0 * S, col32({ c[1], c[2], c[3], 0.12 * a * glow }), 16)
@@ -2077,12 +2107,12 @@ local function draw_tip(dl, wx, wy, x, y, W, S, t, tip)
     dl:AddCircleFilled({ cx - 1 * S, cy - 1 * S }, 1.1 * S, col32({ 1, 1, 1, 0.7 * a * glow }), 8)
     dl:AddRectFilled({ cx - 1.7 * S, cy + 2.8 * S }, { cx + 1.7 * S, cy + 5.4 * S }, col32({ 0.12, 0.13, 0.16, 0.9 * a }), 1)
     dl:AddRectFilled({ cx - 1.4 * S, cy + 3.0 * S }, { cx + 1.4 * S, cy + 5.2 * S }, col32({ 0.78, 0.80, 0.84, a }), 1)
-    text_at(bx + 11 * S, y, { c[1], c[2], c[3], a }, tip.title, ts, true, a)
+    tip_text(bx + 13 * S, y, { c[1], c[2], c[3], a }, tip.title, ts, a)
 
     local ly = y + th + 3 * S
     for _, l in ipairs(tip.lines) do
         local lw, lh = text_size(l, ls)
-        text_at(x + (W - lw) / 2, ly, { 0.93, 0.94, 0.96, a }, l, ls, true, a)
+        tip_text(x + (W - lw) / 2, ly, { 1, 1, 1, a }, l, ls, a)
         ly = ly + lh + 1 * S
     end
     return ly - y
