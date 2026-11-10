@@ -1,6 +1,6 @@
 # FFXI Addons — by Jboor
 
-Ashita v4 addons for Final Fantasy XI, made for the **Phoenix** private server (level 75 cap). Theeb theme.
+Ashita v4 addons for Final Fantasy XI, made for the **Phoenix** private server (level 75 cap).
 
 | Addon | Job | What it does |
 |---|---|---|

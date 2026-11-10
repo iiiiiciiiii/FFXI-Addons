@@ -1,7 +1,7 @@
 --[[
     nard  (نرد - "dice")
     Floating Corsair roll tracker for Ashita v4 - Phoenix (level 75 cap)
-    Theeb theme - by Jboor
+    by Jboor
 
     Shows each active Phantom Roll as a floating die:
       - roll name, die with the total, effect value, time left
@@ -25,7 +25,7 @@
 addon.name    = 'nard'
 addon.author  = 'Jboor'
 addon.version = '1.3.2'
-addon.desc    = 'Floating Corsair roll tracker (Phoenix Lv75) - Theeb theme'
+addon.desc    = 'Floating Corsair roll tracker (Phoenix Lv75)'
 addon.link    = ''
 
 require('common')

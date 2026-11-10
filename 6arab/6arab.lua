@@ -1,7 +1,7 @@
 --[[
     6arab  (طرب - "musical delight")
     Floating Bard song tracker for Ashita v4 - Phoenix (level 75 cap)
-    Theeb theme - by Jboor   (companion to nard)
+    by Jboor   (companion to nard)
 
     Shows each song you sing as a floating note tile:
       - song name ribbon, note tile, effect, timer bar + time left
@@ -27,7 +27,7 @@
 addon.name    = '6arab'
 addon.author  = 'Jboor'
 addon.version = '3.0.3'
-addon.desc    = 'Floating Bard song tracker (Phoenix Lv75) - Theeb theme'
+addon.desc    = 'Floating Bard song tracker (Phoenix Lv75)'
 addon.link    = ''
 
 require('common')
