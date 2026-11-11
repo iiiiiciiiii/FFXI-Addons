@@ -24,7 +24,7 @@
 
 addon.name    = 'nard'
 addon.author  = 'Jboor'
-addon.version = '1.4.0'
+addon.version = '1.5.0'
 addon.desc    = 'Floating Corsair roll tracker (Phoenix Lv75)'
 addon.link    = ''
 
@@ -82,6 +82,8 @@ local defaults = T{
     show_tips  = true,    -- short advice under the cooldowns
     show_range = true,    -- party range dots (melee / mages)
     range_base = 8,       -- Phantom Roll range in yalms (doubled with Luzaf's Ring)
+    range_style = 'dots', -- dots / orbs / crystals / rings / radar
+    radar_flip = false,   -- flip the radar if north / south look swapped
     s_range    = 1.0,
     s_tip      = 1.0,
     solo_mins  = 6,       -- ...this many minutes
@@ -2176,13 +2178,25 @@ local function range_scan(t)
                     local d2 = ent:GetDistance(idx)
                     if st == 2 or st == 3 then m.away = 'KO'
                     elseif d2 == nil or d2 <= 0 then m.away = 'not nearby'
-                    else m.dist = math.sqrt(d2) end
+                    else
+                        m.dist = math.sqrt(d2)
+                        pcall(function ()
+                            local me = p:GetMemberTargetIndex(0)
+                            m.dx = ent:GetLocalPositionX(idx) - ent:GetLocalPositionX(me)
+                            m.dy = ent:GetLocalPositionY(idx) - ent:GetLocalPositionY(me)
+                        end)
+                    end
                 end
                 list[#list + 1] = m
             end
         end
     end)
     range_cache.members = list
+    range_cache.yaw = nil
+    pcall(function ()
+        local me = party():GetMemberTargetIndex(0)
+        range_cache.yaw = AshitaCore:GetMemoryManager():GetEntity():GetLocalPositionYaw(me)
+    end)
 
     -- log when a group's in-range count changes (verbose)
     local R = roll_range()
@@ -2214,7 +2228,7 @@ local function range_groups(rc)
     return out
 end
 
-local function range_width(S, rc)
+local function range_width_dots(S, rc)
     local w = 0
     for _, g in ipairs(range_groups(rc)) do
         w = math.max(w, text_size(g.label, 0.64 * S) + 16 * S + #g.list * 16 * S + text_size('0/0', 0.72 * S) + 12 * S)
@@ -2238,7 +2252,7 @@ local function range_tooltip(m, R)
 end
 
 -- draws the dot groups centered in W; returns height
-local function draw_range(dl, wx, wy, x, y, W, S, t, rc)
+local function draw_range_dots(dl, wx, wy, x, y, W, S, t, rc)
     local R = roll_range()
     local groups = range_groups(rc)
     local rowh = 18 * S
@@ -2285,6 +2299,227 @@ local function draw_range(dl, wx, wy, x, y, W, S, t, rc)
         text_at(dx + #g.list * dotw + 6 * S, cy - ch / 2, cc, cnt, 0.72 * S, true)
     end
     return #groups * rowh
+end
+
+-- ---------------------------------------------------------------------------
+-- Range styles: dots (default), orbs, crystals, rings, radar
+-- ---------------------------------------------------------------------------
+local RANGE_STYLES = { 'dots', 'orbs', 'crystals', 'rings', 'radar' }
+local RANGE_STYLE_NAME = { dots = 'Dots', orbs = 'Job orbs', crystals = 'Crystals', rings = 'Distance rings', radar = 'Mini radar' }
+local GREEN3 = { 0.43, 0.90, 0.55 }
+
+local function range_style()
+    local s = cfg.range_style
+    if RANGE_STYLE_NAME[s] then return s end
+    return 'dots'
+end
+
+-- per-style spacing / row height
+local function style_metrics(st, S)
+    if st == 'orbs' then return 26 * S, 26 * S end
+    if st == 'crystals' then return 22 * S, 26 * S end
+    if st == 'rings' then return 26 * S, 34 * S end
+    return 16 * S, 18 * S
+end
+
+local function member_hit(id, cx, cy, r, mbr, R)
+    if state.no_hit then return end
+    imgui.SetCursorPos({ cx - r, cy - r })
+    imgui.InvisibleButton(id, { r * 2, r * 2 })
+    if imgui.IsItemHovered() then range_tooltip(mbr, R) end
+end
+
+local function centered_text(x, y, col, txt, sc, outline)
+    local w, h = text_size(txt, sc)
+    text_at(x - w / 2, y - h / 2, col, txt, sc, outline)
+end
+
+local function arc(dl, cx, cy, r, a0, a1, col, th)
+    local segs = math.max(2, math.floor(math.abs(a1 - a0) / (math.pi * 2) * 32))
+    for i = 0, segs - 1 do
+        local b0 = a0 + (a1 - a0) * i / segs
+        local b1 = a0 + (a1 - a0) * (i + 1) / segs
+        dl:AddLine({ cx + math.cos(b0) * r, cy + math.sin(b0) * r }, { cx + math.cos(b1) * r, cy + math.sin(b1) * r }, col, th)
+    end
+end
+
+local function draw_orb(dl, wx, wy, cx, cy, S, mbr, ok, t, i)
+    local scx, scy, r = wx + cx, wy + cy, 10.5 * S
+    local p = 0.5 + 0.5 * math.sin(t * 2.0 + i)
+    if ok then
+        dl:AddCircleFilled({ scx, scy }, r + 5 * S, col32({ GREEN3[1], GREEN3[2], GREEN3[3], 0.08 + 0.06 * p }), 20)
+        dl:AddCircleFilled({ scx, scy }, r + 2.5 * S, col32({ GREEN3[1], GREEN3[2], GREEN3[3], 0.15 + 0.08 * p }), 20)
+    end
+    dl:AddCircleFilled({ scx, scy + 1.5 * S }, r, col32({ 0, 0, 0, 0.45 }), 20)
+    dl:AddCircleFilled({ scx, scy }, r, col32(ok and { 0.12, 0.48, 0.24, 1 } or { 0.16, 0.18, 0.23, 1 }), 20)
+    dl:AddCircleFilled({ scx, scy - 1.5 * S }, r - 2.5 * S, col32(ok and { 0.25, 0.75, 0.39, 1 } or { 0.23, 0.25, 0.30, 1 }), 20)
+    dl:AddCircleFilled({ scx - r * 0.3, scy - r * 0.42 }, r * 0.42, col32(ok and { 0.86, 1, 0.88, 0.45 } or { 1, 1, 1, 0.12 }), 14)
+    dl:AddCircle({ scx, scy }, r, col32(ok and { 0.60, 0.95, 0.69, 1 } or { 1.0, 0.47, 0.43, 0.85 }), 20, ok and 1.3 or 1.6)
+    if not mbr.dist then dl:AddCircle({ scx, scy }, r, col32({ 0.55, 0.58, 0.65, 0.9 }), 20, 1.6) end
+    centered_text(cx, cy + 0.5, ok and { 1, 1, 1, 1 } or { 1.0, 0.62, 0.58, 1 }, JOB_ABBR[mbr.job] or '?', 0.58 * S, true)
+    return r
+end
+
+local function draw_crystal(dl, wx, wy, cx, cy, S, mbr, ok, t, i)
+    local x, y, s = wx + cx, wy + cy, 8 * S
+    local p = 0.5 + 0.5 * math.sin(t * 2.0 + i)
+    local top, rt, bot, lf, mid = { x, y - s * 1.25 }, { x + s * 0.75, y }, { x, y + s * 1.25 }, { x - s * 0.75, y }, { x, y }
+    if ok then dl:AddCircleFilled({ x, y }, s * 1.6, col32({ GREEN3[1], GREEN3[2], GREEN3[3], 0.10 + 0.08 * p }), 18) end
+    local shade = ok and { 1, 0.75, 0.55, 0.85 } or { 0.35, 0.28, 0.22, 0.30 }
+    local faces = { { top, rt }, { rt, bot }, { bot, lf }, { lf, top } }
+    for k, f in ipairs(faces) do
+        local c = ok and { GREEN3[1], GREEN3[2], GREEN3[3], shade[k] } or { 0.59, 0.61, 0.67, shade[k] }
+        dl:AddTriangleFilled(f[1], f[2], mid, col32(c))
+    end
+    local oc = col32(ok and { 1, 1, 1, 0.85 } or (mbr.dist and { 1.0, 0.43, 0.39, 0.75 } or { 0.55, 0.58, 0.65, 0.8 }))
+    dl:AddLine(top, rt, oc, 1.2); dl:AddLine(rt, bot, oc, 1.2); dl:AddLine(bot, lf, oc, 1.2); dl:AddLine(lf, top, oc, 1.2)
+    if ok then
+        local g = (t * 0.7 + i * 0.3) % 2
+        if g < 1 then dl:AddCircleFilled({ x - s * 0.25 + g * s * 0.5, y - s * 0.5 + g * s }, 1.6 * S, col32({ 1, 1, 1, 0.9 }), 8) end
+    end
+    return s
+end
+
+local function draw_dist_ring(dl, wx, wy, cx, cy, S, mbr, ok, t, i, R)
+    local scx, scy, r = wx + cx, wy + cy, 9 * S
+    dl:AddCircle({ scx, scy }, r, col32({ 1, 1, 1, 0.12 }), 24, 3 * S)
+    local d = mbr.dist
+    local cc
+    if not d then cc = { 0.55, 0.58, 0.65 }
+    elseif d <= R then cc = (d > R * 0.75) and { 1.0, 0.79, 0.36 } or GREEN3
+    else cc = { 1.0, 0.43, 0.39 } end
+    local f = d and math.max(0.08, math.min(1, 1 - d / (R * 1.6))) or 0.08
+    arc(dl, scx, scy, r, -math.pi / 2, -math.pi / 2 + math.pi * 2 * f, col32({ cc[1], cc[2], cc[3], 0.95 }), 3 * S)
+    dl:AddCircleFilled({ scx, scy }, r - 4 * S, col32((d and d <= R) and { cc[1], cc[2], cc[3], 0.9 } or { 0.16, 0.17, 0.22, 0.9 }), 16)
+    local txt = d and ('%d\''):format(math.floor(d + 0.5)) or '--'
+    centered_text(cx, cy + r + 7 * S, (d and d <= R) and { 0.91, 1, 0.91, 1 } or { 1.0, 0.60, 0.57, 1 }, txt, 0.56 * S, true)
+    return r
+end
+
+-- one group row for the dot-like styles
+local function draw_range_row(dl, wx, wy, x, y, W, S, t, g, gi, st, R)
+    local tint = g.tint
+    local lw = text_size(g.label, 0.64 * S)
+    local dotw, rowh = style_metrics(st, S)
+    local total = lw + 16 * S + #g.list * dotw + text_size('0/0', 0.72 * S) + 6 * S
+    local x0 = x + (W - total) / 2
+    local cy = y + (gi - 1) * rowh + rowh / 2 - ((st == 'rings') and 4 * S or 0)
+    dl:AddCircleFilled({ wx + x0 + 3 * S, wy + cy }, 2 * S, col32({ tint[1], tint[2], tint[3], 1 }), 10)
+    local _, lh = text_size(g.label, 0.64 * S)
+    text_at(x0 + 8 * S, cy - lh / 2, { tint[1], tint[2], tint[3], 1 }, g.label, 0.64 * S, true)
+    local dx = x0 + lw + 16 * S
+    local inn = 0
+    for i, mbr in ipairs(g.list) do
+        local cx = dx + (i - 1) * dotw + dotw / 2 - 2 * S
+        local ok = mbr.dist ~= nil and mbr.dist <= R
+        if ok then inn = inn + 1 end
+        local r
+        if st == 'orbs' then r = draw_orb(dl, wx, wy, cx, cy, S, mbr, ok, t, i)
+        elseif st == 'crystals' then r = draw_crystal(dl, wx, wy, cx, cy, S, mbr, ok, t, i)
+        elseif st == 'rings' then r = draw_dist_ring(dl, wx, wy, cx, cy, S, mbr, ok, t, i, R)
+        end
+        member_hit(('##nard_rng_%s_%d'):format(g.label, i), cx, cy, r or 6 * S, mbr, R)
+    end
+    local cnt = ('%d/%d'):format(inn, #g.list)
+    local cc = (inn == #g.list) and C.green or ((inn == 0) and C.red or { 1.0, 0.79, 0.36, 1 })
+    local _, ch = text_size(cnt, 0.72 * S)
+    text_at(dx + #g.list * dotw + 4 * S, cy - ch / 2, cc, cnt, 0.72 * S, true)
+    return rowh
+end
+
+-- mini radar: you in the middle, roll range circle, members at their real direction
+local RADAR_R = 46
+local function draw_radar(dl, wx, wy, x, y, W, S, t, rc, R)
+    local RR = RADAR_R * S
+    local cx, cy = x + W / 2, y + RR + 6 * S
+    local scx, scy = wx + cx, wy + cy
+    local sc = RR / (R * 1.6)
+    dl:AddCircleFilled({ scx, scy }, RR + 4 * S, col32({ 0.04, 0.05, 0.09, 0.55 }), 40)
+    dl:AddCircle({ scx, scy }, RR, col32({ 1, 1, 1, 0.15 }), 40, 1.0)
+    local sweep = (t * 1.4) % (math.pi * 2)
+    for k = 0, 13 do
+        local a0, a1 = sweep - k * 0.05, sweep - (k + 1) * 0.05
+        dl:AddTriangleFilled({ scx, scy }, { scx + math.cos(a0) * RR, scy + math.sin(a0) * RR },
+            { scx + math.cos(a1) * RR, scy + math.sin(a1) * RR }, col32({ GREEN3[1], GREEN3[2], GREEN3[3], 0.12 * (1 - k / 14) }))
+    end
+    dl:AddCircleFilled({ scx, scy }, R * sc, col32({ GREEN3[1], GREEN3[2], GREEN3[3], 0.08 }), 36)
+    dl:AddCircle({ scx, scy }, R * sc, col32({ GREEN3[1], GREEN3[2], GREEN3[3], 0.6 }), 36, 1.4)
+    centered_text(cx + R * sc * 0.72, cy - R * sc * 0.72, { 0.60, 0.95, 0.69, 1 }, ('%d\''):format(R), 0.56 * S, true)
+
+    local flip = cfg.radar_flip and -1 or 1
+    local inn = { MELEE = 0, MAGES = 0 }
+    local tot = { MELEE = 0, MAGES = 0 }
+    for i, mbr in ipairs(rc.members) do
+        local key = mbr.mage and 'MAGES' or 'MELEE'
+        tot[key] = tot[key] + 1
+        local ok = mbr.dist ~= nil and mbr.dist <= R
+        if ok then inn[key] = inn[key] + 1 end
+        if mbr.dx and mbr.dy then
+            local bx, by = mbr.dx * sc, -mbr.dy * sc * flip
+            local len = math.sqrt(bx * bx + by * by)
+            if len > RR * 0.95 then bx, by = bx / len * RR * 0.95, by / len * RR * 0.95 end
+            local px, py = cx + bx, cy + by
+            local tint = mbr.mage and ROW_TINT.MAGES or ROW_TINT.MELEE
+            if ok then dl:AddCircleFilled({ wx + px, wy + py }, 7 * S, col32({ GREEN3[1], GREEN3[2], GREEN3[3], 0.18 }), 14) end
+            dl:AddCircleFilled({ wx + px, wy + py }, 4.2 * S, col32(ok and { GREEN3[1], GREEN3[2], GREEN3[3], 1 } or { 0.12, 0.13, 0.17, 0.9 }), 14)
+            dl:AddCircle({ wx + px, wy + py }, 4.2 * S, col32(ok and { tint[1], tint[2], tint[3], 1 } or { 1.0, 0.43, 0.39, 0.85 }), 14, 1.5)
+            centered_text(px, py - 9 * S, { tint[1], tint[2], tint[3], 1 }, JOB_ABBR[mbr.job] or '?', 0.52 * S, true)
+            member_hit(('##nard_rdr_%d'):format(i), px, py, 6 * S, mbr, R)
+        end
+    end
+    -- you: arrow pointing where you face
+    local yaw = rc.yaw or 0
+    local fa = (rc.yaw ~= nil) and (-yaw * flip) or (-math.pi / 2)
+    local function rot(ax, ay) return scx + ax * math.cos(fa) - ay * math.sin(fa), scy + ax * math.sin(fa) + ay * math.cos(fa) end
+    local ax1, ay1 = rot(7 * S, 0)
+    local ax2, ay2 = rot(-5 * S, 5 * S)
+    local ax3, ay3 = rot(-2 * S, 0)
+    local ax4, ay4 = rot(-5 * S, -5 * S)
+    dl:AddTriangleFilled({ ax1, ay1 }, { ax2, ay2 }, { ax3, ay3 }, col32(C.gold))
+    dl:AddTriangleFilled({ ax1, ay1 }, { ax3, ay3 }, { ax4, ay4 }, col32(C.gold))
+
+    -- legend
+    local ly = cy + RR + 10 * S
+    local parts = {}
+    for _, key in ipairs({ 'MELEE', 'MAGES' }) do
+        if tot[key] > 0 then parts[#parts + 1] = key end
+    end
+    local seg = W / math.max(1, #parts)
+    for k, key in ipairs(parts) do
+        local tint = ROW_TINT[key]
+        local cnt = ('%s %d/%d'):format(key, inn[key], tot[key])
+        local cc = (inn[key] == tot[key]) and C.green or ((inn[key] == 0) and C.red or { 1.0, 0.79, 0.36, 1 })
+        local w, h = text_size(cnt, 0.62 * S)
+        local lx = x + (k - 1) * seg + (seg - w) / 2
+        dl:AddCircleFilled({ wx + lx - 5 * S, wy + ly + h / 2 }, 2 * S, col32({ tint[1], tint[2], tint[3], 1 }), 10)
+        text_at(lx, ly, cc, cnt, 0.62 * S, true)
+    end
+    return (ly - y) + 14 * S
+end
+
+
+local function range_width(S, rc)
+    local st = range_style()
+    if st == 'dots' then return range_width_dots(S, rc) end
+    if st == 'radar' then return math.max(RADAR_R * 2 * S + 16 * S, 150 * S) end
+    local dotw = style_metrics(st, S)
+    local w = 0
+    for _, g in ipairs(range_groups(rc)) do
+        w = math.max(w, text_size(g.label, 0.64 * S) + 16 * S + #g.list * dotw + text_size('0/0', 0.72 * S) + 12 * S)
+    end
+    return w
+end
+
+local function draw_range(dl, wx, wy, x, y, W, S, t, rc)
+    local st = range_style()
+    if st == 'dots' then return draw_range_dots(dl, wx, wy, x, y, W, S, t, rc) end
+    local R = roll_range()
+    if st == 'radar' then return draw_radar(dl, wx, wy, x, y, W, S, t, rc, R) end
+    local h = 0
+    for gi, g in ipairs(range_groups(rc)) do
+        h = h + draw_range_row(dl, wx, wy, x, y, W, S, t, g, gi, st, R)
+    end
+    return h
 end
 
 -- one row of dice (with optional panel + tab label); returns its height
@@ -2934,6 +3169,22 @@ local function draw_config()
                 end
                 imgui.PopItemWidth()
                 help_marker('##h_range_base', "How far Phantom Roll reaches from you, in yalms. Doubled automatically while you wear Luzaf's Ring.")
+                imgui.PushItemWidth(W - 70)
+                if imgui.BeginCombo('##range_style', 'Style: ' .. RANGE_STYLE_NAME[range_style()]) then
+                    for _, k in ipairs(RANGE_STYLES) do
+                        if imgui.Selectable(RANGE_STYLE_NAME[k], range_style() == k) then
+                            cfg.range_style = k
+                            settings.save()
+                            dlog.add('CFG', 'Range style = ' .. RANGE_STYLE_NAME[k])
+                        end
+                    end
+                    imgui.EndCombo()
+                end
+                imgui.PopItemWidth()
+                help_marker('##h_range_style', 'Dots: small and simple.  Job orbs: glossy balls with the job name.  Crystals: FFXI-style gems.  Distance rings: a ring that fills the closer they are, with yalms (amber near the edge).  Mini radar: you in the middle, members where they really stand.')
+                if range_style() == 'radar' then
+                    opt_checkbox('Flip radar', 'radar_flip', 'Turn this on if people in front of you show up behind you on the radar.')
+                end
             end
             opt_checkbox('Show tips', 'show_tips', 'Short advice under the cooldowns for your own rolls: after a bust, when Double-Up is safe or risky, lucky / unlucky numbers, a roll about to wear off, and when Phantom Roll is ready for another roll.')
             opt_checkbox('Hide when solo', 'solo_hide', 'Hide nard completely after you have been out of a party for the time below. It comes back the moment you join a party (or alliance).')
