@@ -12,6 +12,7 @@ Floating **Corsair roll tracker** for Ashita v4 — Phoenix (level 75). by Jboor
 - Up to 4 rolls: MELEE row and MAGES row, sorted by the jobs each roll landed on
 - Party job bonus included in effect values
 - Phantom Roll and Double-Up cooldown pills
+- Party range dots: each melee / mage party member turns green when they're close enough to get your roll (Luzaf's Ring detected)
 - Real buff check: a roll that wears off early is removed
 - Tips: short advice for your own rolls (after a bust, safe or risky Double-Up, lucky / unlucky, a roll about to wear off, Phantom Roll ready)
 - Hides itself after a few minutes out of a party, back as soon as you join one

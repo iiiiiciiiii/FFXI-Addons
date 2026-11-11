@@ -24,7 +24,7 @@
 
 addon.name    = 'nard'
 addon.author  = 'Jboor'
-addon.version = '1.3.2'
+addon.version = '1.4.0'
 addon.desc    = 'Floating Corsair roll tracker (Phoenix Lv75)'
 addon.link    = ''
 
@@ -80,6 +80,9 @@ local defaults = T{
     free       = false,   -- separate pieces, each moved on its own
     solo_hide  = true,    -- hide everything when not in a party for a while
     show_tips  = true,    -- short advice under the cooldowns
+    show_range = true,    -- party range dots (melee / mages)
+    range_base = 8,       -- Phantom Roll range in yalms (doubled with Luzaf's Ring)
+    s_range    = 1.0,
     s_tip      = 1.0,
     solo_mins  = 6,       -- ...this many minutes
     pieces     = T{},     -- saved piece positions / lock state
@@ -2118,6 +2121,172 @@ local function draw_tip(dl, wx, wy, x, y, W, S, t, tip)
     return ly - y
 end
 
+----------------------------------------------------------------------------
+-- Party range dots: is each party member close enough to get your roll?
+-- Melee on top, mages below. Green = in range, red ring = out, grey = away.
+----------------------------------------------------------------------------
+local LUZAF_RING_ID = 15810
+local JOB_ABBR = { 'WAR', 'MNK', 'WHM', 'BLM', 'RDM', 'THF', 'PLD', 'DRK', 'BST', 'BRD',
+                   'RNG', 'SAM', 'NIN', 'DRG', 'SMN', 'BLU', 'COR', 'PUP', 'DNC', 'SCH' }
+local range_cache = { t = -1, members = {}, luzaf = false, counts = {} }
+
+local function has_luzaf()
+    local ok, r = pcall(function ()
+        local inv = AshitaCore:GetMemoryManager():GetInventory()
+        for _, slot in ipairs({ 13, 14 }) do          -- left / right ring
+            local eq  = inv:GetEquippedItem(slot)
+            local idx = eq and bit.band(eq.Index, 0x00FF) or 0
+            if idx ~= 0 then
+                local cont = bit.rshift(bit.band(eq.Index, 0xFF00), 8)
+                local item = inv:GetContainerItem(cont, idx)
+                if item ~= nil and item.Id == LUZAF_RING_ID then return true end
+            end
+        end
+        return false
+    end)
+    return ok and r or false
+end
+
+local function roll_range()
+    local base = tonumber(cfg.range_base) or 8
+    return range_cache.luzaf and base * 2 or base
+end
+
+-- refreshes 4x a second
+local function range_scan(t)
+    if t - range_cache.t < 0.25 then return range_cache end
+    range_cache.t = t
+    range_cache.luzaf = has_luzaf()
+    local list = {}
+    pcall(function ()
+        local p      = party()
+        local ent    = AshitaCore:GetMemoryManager():GetEntity()
+        local myzone = p:GetMemberZone(0)
+        for i = 1, 5 do
+            if p:GetMemberIsActive(i) == 1 and p:GetMemberServerId(i) ~= 0 then
+                local m = { name = p:GetMemberName(i), job = p:GetMemberMainJob(i) }
+                m.mage = MAGE_JOBS[m.job] == true
+                local idx = p:GetMemberTargetIndex(i)
+                if p:GetMemberZone(i) ~= myzone then
+                    m.away = 'other zone'
+                elseif idx == nil or idx == 0 then
+                    m.away = 'not nearby'
+                else
+                    local st = ent:GetStatus(idx)
+                    local d2 = ent:GetDistance(idx)
+                    if st == 2 or st == 3 then m.away = 'KO'
+                    elseif d2 == nil or d2 <= 0 then m.away = 'not nearby'
+                    else m.dist = math.sqrt(d2) end
+                end
+                list[#list + 1] = m
+            end
+        end
+    end)
+    range_cache.members = list
+
+    -- log when a group's in-range count changes (verbose)
+    local R = roll_range()
+    for _, g in ipairs({ { 'MELEE', false }, { 'MAGES', true } }) do
+        local inn, n = 0, 0
+        for _, m in ipairs(list) do
+            if m.mage == g[2] then
+                n = n + 1
+                if m.dist and m.dist <= R then inn = inn + 1 end
+            end
+        end
+        local key = inn .. '/' .. n
+        if n > 0 and range_cache.counts[g[1]] ~= key then
+            dlog.add('INFO', ('%s in roll range: %s (range %d\')'):format(g[1], key, R), true)
+        end
+        range_cache.counts[g[1]] = key
+    end
+    return range_cache
+end
+
+local function range_groups(rc)
+    local mel, mag = {}, {}
+    for _, m in ipairs(rc.members) do
+        if m.mage then mag[#mag + 1] = m else mel[#mel + 1] = m end
+    end
+    local out = {}
+    if #mel > 0 then out[#out + 1] = { label = 'MELEE', list = mel, tint = ROW_TINT.MELEE } end
+    if #mag > 0 then out[#out + 1] = { label = 'MAGES', list = mag, tint = ROW_TINT.MAGES } end
+    return out
+end
+
+local function range_width(S, rc)
+    local w = 0
+    for _, g in ipairs(range_groups(rc)) do
+        w = math.max(w, text_size(g.label, 0.64 * S) + 16 * S + #g.list * 16 * S + text_size('0/0', 0.72 * S) + 12 * S)
+    end
+    return w
+end
+
+local function range_tooltip(m, R)
+    imgui.BeginTooltip()
+    imgui.TextColored(C.gold, m.name or '?')
+    imgui.SameLine()
+    imgui.TextColored(C.steel, '(' .. (JOB_ABBR[m.job] or '?') .. ')')
+    if m.away then
+        imgui.TextColored(C.dim, m.away)
+    else
+        local ok = m.dist <= R
+        imgui.TextColored(ok and C.green or C.red, ('%.1f\'  %s'):format(m.dist, ok and 'in range' or 'out of range'))
+    end
+    imgui.TextColored(C.dim, ('Roll range %d\'%s'):format(R, range_cache.luzaf and '  (Luzaf\'s Ring)' or ''))
+    imgui.EndTooltip()
+end
+
+-- draws the dot groups centered in W; returns height
+local function draw_range(dl, wx, wy, x, y, W, S, t, rc)
+    local R = roll_range()
+    local groups = range_groups(rc)
+    local rowh = 18 * S
+    for gi, g in ipairs(groups) do
+        local tint = g.tint
+        local lw = text_size(g.label, 0.64 * S)
+        local dotw = 16 * S
+        local total = lw + 16 * S + #g.list * dotw + text_size('0/0', 0.72 * S) + 6 * S
+        local x0 = x + (W - total) / 2
+        local cy = y + (gi - 1) * rowh + rowh / 2
+        dl:AddCircleFilled({ wx + x0 + 3 * S, wy + cy }, 2 * S, col32({ tint[1], tint[2], tint[3], 1 }), 10)
+        local _, lh = text_size(g.label, 0.64 * S)
+        text_at(x0 + 8 * S, cy - lh / 2, { tint[1], tint[2], tint[3], 1 }, g.label, 0.64 * S, true)
+
+        local dx = x0 + lw + 16 * S
+        local inn = 0
+        for i, mbr in ipairs(g.list) do
+            local cx = dx + (i - 1) * dotw + 6 * S
+            local scx, scy = wx + cx, wy + cy
+            local r = 5.2 * S
+            if mbr.dist and mbr.dist <= R then
+                inn = inn + 1
+                local p = 0.5 + 0.5 * math.sin(t * 2.0 + i)
+                dl:AddCircleFilled({ scx, scy }, r + 3 * S, col32({ 0.43, 0.90, 0.55, 0.10 + 0.06 * p }), 16)
+                dl:AddCircleFilled({ scx, scy }, r, col32({ 0.04, 0.16, 0.08, 0.9 }), 16)
+                dl:AddCircleFilled({ scx, scy }, r - 1.3 * S, col32({ 0.43, 0.90, 0.55, 1 }), 16)
+                dl:AddCircleFilled({ scx - 1.5 * S, scy - 1.5 * S }, 1.4 * S, col32({ 1, 1, 1, 0.7 }), 8)
+            elseif mbr.dist then
+                dl:AddCircleFilled({ scx, scy }, r, col32({ 0.05, 0.06, 0.09, 0.85 }), 16)
+                dl:AddCircle({ scx, scy }, r - 1 * S, col32({ 1.0, 0.43, 0.39, 0.85 }), 16, 1.6 * S)
+            else
+                dl:AddCircleFilled({ scx, scy }, r, col32({ 0.05, 0.06, 0.09, 0.70 }), 16)
+                dl:AddCircle({ scx, scy }, r - 1 * S, col32({ 0.55, 0.58, 0.65, 0.55 }), 16, 1.3 * S)
+            end
+            if not state.no_hit then
+                imgui.SetCursorPos({ cx - r, cy - r })
+                imgui.InvisibleButton(('##nard_rng_%s_%d'):format(g.label, i), { r * 2, r * 2 })
+                if imgui.IsItemHovered() then range_tooltip(mbr, R) end
+            end
+        end
+        local cnt = ('%d/%d'):format(inn, #g.list)
+        local cc = (inn == #g.list) and C.green or ((inn == 0) and C.red or { 1.0, 0.79, 0.36, 1 })
+        local _, ch = text_size(cnt, 0.72 * S)
+        text_at(dx + #g.list * dotw + 6 * S, cy - ch / 2, cc, cnt, 0.72 * S, true)
+    end
+    return #groups * rowh
+end
+
 -- one row of dice (with optional panel + tab label); returns its height
 local function draw_row(dl, wx, wy, bx, y, W, row, m, t, now, hovered)
     local S = m.S
@@ -2183,6 +2352,10 @@ local function draw_overlay_full(list, now)
     local tip = current_tip(anim_time())
     local St  = S * sz('s_tip')
     if tip then W = math.max(W, tip_lines_width(tip, St) + 8 * S) end
+    local rc  = cfg.show_range and range_scan(anim_time()) or nil
+    if rc and #rc.members == 0 then rc = nil end
+    local Sr  = S * sz('s_range')
+    if rc then W = math.max(W, range_width(Sr, rc) + 8 * S) end
     local bx, by = imgui.GetCursorPos()
     local wx, wy = imgui.GetWindowPos()
     local dl     = imgui.GetWindowDrawList()
@@ -2226,8 +2399,13 @@ local function draw_overlay_full(list, now)
         local ph = draw_cd_row(dl, wx, wy, bx, y - 6 * S, W, S * sz('s_cd'), t)
         y = y - 6 * S + ph + ((#rows > 0) and 18 * S or 4 * S)
     end
+    if rc then
+        if cfg.show_cd then y = y - ((#rows > 0) and 12 * S or 0) end
+        local rh = draw_range(dl, wx, wy, bx, y, W, Sr, t, rc)
+        y = y + rh + ((#rows > 0 or tip) and 14 * S or 4 * S)
+    end
     if tip then
-        if cfg.show_cd then y = y - ((#rows > 0) and 10 * S or 0) end
+        if cfg.show_cd and not rc then y = y - ((#rows > 0) and 10 * S or 0) end
         local th = draw_tip(dl, wx, wy, bx, y, W, St, t, tip)
         y = y + th + ((#rows > 0) and 16 * S or 4 * S)
     end
@@ -2353,10 +2531,10 @@ end
 -- Right-click a piece -> unlock / lock / reset / join back.
 ----------------------------------------------------------------------------
 local PIECE_NAME = {
-    pr = 'Phantom Roll cooldown', du = 'Double-Up cooldown', tips = 'Tips',
+    pr = 'Phantom Roll cooldown', du = 'Double-Up cooldown', tips = 'Tips', range = 'Party range',
     MELEE = 'Melee rolls', MAGES = 'Mage rolls', SELF = 'Your rolls', PARTY = 'Party rolls',
 }
-local PIECE_OFF = { tips = -46, pr = 0, du = 26, MELEE = 62, MAGES = 250, SELF = 440, PARTY = 630 }
+local PIECE_OFF = { tips = -46, pr = 0, du = 26, range = 54, MELEE = 100, MAGES = 290, SELF = 480, PARTY = 670 }
 
 local function piece_default(key)
     if key == 'tips' and type(cfg.pieces) == 'table' and type(cfg.pieces.pr) == 'table' and tonumber(cfg.pieces.pr.y) then
@@ -2554,6 +2732,16 @@ local function draw_free_layout(list, now)
             end)
         end
     end
+    local rc = cfg.show_range and range_scan(anim_time()) or nil
+    if rc and #rc.members > 0 then
+        piece_window('range', function (dl, wx, wy, bx, by, hovered, unlocked)
+            local Sr = S * sz('s_range')
+            local W  = range_width(Sr, rc) + 8 * S
+            local rh = draw_range(dl, wx, wy, bx, by + 2 * S, W, Sr, anim_time(), rc)
+            imgui.SetCursorPos({ bx, by })
+            imgui.Dummy({ W, rh + 4 * S + (unlocked and 16 * S or 0) })
+        end)
+    end
     local tip = current_tip(anim_time())
     if tip then
         piece_window('tips', function (dl, wx, wy, bx, by, hovered, unlocked)
@@ -2736,6 +2924,17 @@ local function draw_config()
                 imgui.PopItemWidth()
                 help_marker('##h_cd_warn', 'Amber pulsing highlight on the cooldown pills this many seconds before they are ready. 0 = off.')
             end
+            opt_checkbox('Party range', 'show_range', "Dots for each party member under the cooldowns - melee on top, mages below. Green = close enough to get your roll, red ring = too far, grey = other zone / not nearby / KO. Hover a dot for name, job and distance.")
+            if cfg.show_range then
+                imgui.PushItemWidth(W - 70)
+                local rv = { tonumber(cfg.range_base) or 8 }
+                if imgui.SliderFloat('##range_base', rv, 4, 20, "Roll range %.0f'") then
+                    cfg.range_base = math.floor(rv[1] + 0.5)
+                    settings.save()
+                end
+                imgui.PopItemWidth()
+                help_marker('##h_range_base', "How far Phantom Roll reaches from you, in yalms. Doubled automatically while you wear Luzaf's Ring.")
+            end
             opt_checkbox('Show tips', 'show_tips', 'Short advice under the cooldowns for your own rolls: after a bust, when Double-Up is safe or risky, lucky / unlucky numbers, a roll about to wear off, and when Phantom Roll is ready for another roll.')
             opt_checkbox('Hide when solo', 'solo_hide', 'Hide nard completely after you have been out of a party for the time below. It comes back the moment you join a party (or alliance).')
             if cfg.solo_hide then
@@ -2761,8 +2960,9 @@ local function draw_config()
             size_slider(W, 'Cooldowns',      's_cd',   0.6, 1.8, 'The Phantom Roll and Double-Up cooldown pills at the top.')
             size_slider(W, 'Effects',        's_fx',   0.3, 1.8, 'Fire height, Lucky explosion and the 11 zoom & smash.')
             size_slider(W, 'Tips',           's_tip',  0.6, 1.8, 'The advice text under the cooldowns.')
+            size_slider(W, 'Party range',    's_range', 0.6, 1.8, 'The party range dots.')
             if imgui.Button('Reset sizes', { 100, 0 }) then
-                cfg.scale, cfg.s_die, cfg.s_name, cfg.s_info, cfg.s_cd, cfg.s_fx, cfg.s_tip = 1, 1, 1, 1, 1, 1, 1
+                cfg.scale, cfg.s_die, cfg.s_name, cfg.s_info, cfg.s_cd, cfg.s_fx, cfg.s_tip, cfg.s_range = 1, 1, 1, 1, 1, 1, 1, 1
                 settings.save()
                 dlog.add('CFG', 'Sizes reset')
             end
