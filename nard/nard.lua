@@ -24,7 +24,7 @@
 
 addon.name    = 'nard'
 addon.author  = 'Jboor'
-addon.version = '1.7.3'
+addon.version = '1.7.4'
 addon.desc    = 'Floating Corsair roll tracker (Phoenix Lv75)'
 addon.link    = ''
 
@@ -266,9 +266,10 @@ local function parse_action(e)
     local tcount = bits(6)
     off = off + 4
     act.category = bits(4)
-    if act.category ~= 6 then return act end   -- only job abilities matter
+    if act.category ~= 6 and act.category ~= 4 and act.category ~= 8 then return act end
 
     act.param = bits(16)
+    if act.category ~= 6 then return act end   -- 4 = spell finished, 8 = casting start / interrupt
     off = off + 16
     act.recast = bits(32)
 
@@ -3505,7 +3506,7 @@ function AUTO.due_roll(now)
     return nil, waiting
 end
 
--- song that needs singing now, or nil
+-- song that needs singing now, or nil (timed from casts that really finished)
 function AUTO.song_due(now)
     local name = cfg.auto_song
     if type(name) ~= 'string' or name == '' then return nil end
@@ -3514,13 +3515,58 @@ function AUTO.song_due(now)
     local mj, ml, sj, sl = AUTO.levels()
     local blvl = (mj == 10) and ml or ((sj == 10) and sl or 0)
     if blvl < s.lvl then return nil end
+
+    -- a cast we sent is still waiting to finish / be confirmed
+    if AUTO.song_pending then
+        if now - AUTO.song_pending_t < 15 then return nil end
+        AUTO.song_pending = nil
+        AUTO.song_fail = (AUTO.song_fail or 0) + 1
+        dlog.add('AUTO', ('%s did not finish (%d in a row)'):format(name, AUTO.song_fail))
+        if AUTO.song_fail >= 3 then
+            AUTO.song_fail = 0
+            AUTO.song_block_until = now + 60
+            dlog.add('ERR', name .. " didn't land 3 times - pausing the song for 60s (check MP, silence, or that you know the song)")
+        end
+    end
+    if now < (AUTO.song_block_until or 0) then return nil end
+
     local has = my_buffs()[s.st] == true
-    if has and not AUTO.song_seen then AUTO.sang_at = now end
-    AUTO.song_seen = has
-    if not has then return s, 'not up' end
-    local left = (AUTO.sang_at or now) + AUTO.SONG_TIME - now
-    if left <= (tonumber(cfg.auto_resing) or 20) then return s, ('%ds left'):format(left) end
+    if AUTO.sang_at == nil and has then AUTO.sang_at = now end      -- already up when Auto started
+    local left = AUTO.sang_at and (AUTO.sang_at + AUTO.SONG_TIME - now) or -1
+    if not has and left < AUTO.SONG_TIME - 15 then return s, 'not up' end
+    if has and left <= (tonumber(cfg.auto_resing) or 20) then return s, ('%ds left'):format(math.max(0, left)) end
     return nil
+end
+
+-- your own casting: 8 = start (param 28787 = interrupted), 4 = finished (param = spell id)
+function AUTO.on_cast(cat, param)
+    local t = anim_time()
+    if cat == 8 then
+        if param == 28787 then
+            AUTO.casting_until = 0
+            if AUTO.song_pending then
+                dlog.add('AUTO', AUTO.song_pending .. ' was interrupted')
+                AUTO.song_pending = nil
+            end
+        else
+            AUTO.casting_until = t + 12
+        end
+        return
+    end
+    AUTO.casting_until = 0
+    if AUTO.song_pending then
+        local ok, nm = pcall(function ()
+            local sp = AshitaCore:GetResourceManager():GetSpellById(param)
+            return sp and sp.Name and sp.Name[1] or nil
+        end)
+        local spell = ok and nm or nil
+        if spell == nil or spell == AUTO.song_pending then
+            AUTO.sang_at = os.time()
+            AUTO.song_fail = 0
+            dlog.add('AUTO', ('%s landed - next in about %ds'):format(AUTO.song_pending, AUTO.SONG_TIME - (tonumber(cfg.auto_resing) or 20)))
+            AUTO.song_pending = nil
+        end
+    end
 end
 
 -- Only ever moves for a roll or the song: once you're close enough, stop and stand still.
@@ -3563,6 +3609,7 @@ function AUTO.step(t)
     AUTO.track_move(t)
     if cfg.auto_manual and t < AUTO.manual_until then return AUTO.set('Paused - you are moving') end
     if t < AUTO.busy_until then return end
+    if t < (AUTO.casting_until or 0) then return AUTO.set('Waiting - casting') end
 
     -- 1) Double-Up on your newest open roll
     local open = nil
@@ -3616,7 +3663,8 @@ function AUTO.step(t)
         end
         if AUTO.following then AUTO.stop_follow('singing'); AUTO.busy_until = t + 0.6; return end
         AUTO.cmd(('/ma "%s" <me>'):format(song.n), why)
-        AUTO.busy_until = t + 9
+        AUTO.song_pending, AUTO.song_pending_t = song.n, now
+        AUTO.busy_until = t + 3
         return AUTO.set('Singing ' .. song.n)
     end
 
@@ -3631,6 +3679,7 @@ function AUTO.step(t)
 end
 
 function AUTO.toggle(on)
+    AUTO.sang_at, AUTO.song_pending, AUTO.song_fail, AUTO.song_block_until, AUTO.casting_until = nil, nil, 0, 0, 0
     cfg.auto_on = on
     settings.save()
     if not on then AUTO.stop_follow('Auto off') end
@@ -3887,6 +3936,7 @@ function UI.tab_auto(W)
     end
     UI.combo(W, 'Song', 'auto_song', cfg.auto_song, songs, function (v)
         cfg.auto_song = v; settings.save(); dlog.add('CFG', 'auto song = ' .. (v == '' and 'None' or v))
+        AUTO.sang_at, AUTO.song_pending, AUTO.song_fail, AUTO.song_block_until = nil, nil, 0, 0
     end, 'One song kept up on yourself and the party around you. Only songs your sub BRD level can sing are listed.')
     UI.int(W, 'Re-sing at', 'auto_resing', 20, 5, 60, function () return '%.0f s left' end,
         'Sing again when the song has this many seconds left (songs last about 2 minutes).')
@@ -4024,6 +4074,9 @@ ashita.events.register('packet_in', 'nard_packet_in', function (e)
         if not ok then
             dlog.add('ERR', 'Action parse failed: ' .. tostring(act))
             return
+        end
+        if (act.category == 4 or act.category == 8) and act.actor == my_id() and AUTO.on_cast then
+            pcall(AUTO.on_cast, act.category, act.param)
         end
         if act.category == 6 then
             if not cor_active() then return end
