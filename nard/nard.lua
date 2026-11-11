@@ -24,7 +24,7 @@
 
 addon.name    = 'nard'
 addon.author  = 'Jboor'
-addon.version = '1.5.0'
+addon.version = '1.5.1'
 addon.desc    = 'Floating Corsair roll tracker (Phoenix Lv75)'
 addon.link    = ''
 
@@ -83,6 +83,7 @@ local defaults = T{
     show_range = true,    -- party range dots (melee / mages)
     range_base = 8,       -- Phantom Roll range in yalms (doubled with Luzaf's Ring)
     range_style = 'dots', -- dots / orbs / crystals / rings / radar
+    roll_group = T{},     -- rolls you pinned to a row: [roll name] = 'MELEE' / 'MAGES'
     radar_flip = false,   -- flip the radar if north / south look swapped
     s_range    = 1.0,
     s_tip      = 1.0,
@@ -343,11 +344,40 @@ local function classify(actor, targets)
             end
         end
     end)
-    if melee == 0 and mage == 0 then return 'SELF' end
-    return (mage > melee) and 'MAGES' or 'MELEE'
+    if melee == 0 and mage == 0 then return 'SELF', 0, 0 end
+    return (mage > melee) and 'MAGES' or 'MELEE', melee, mage
 end
 
 local ROW_ORDER = { MELEE = 1, MAGES = 2, SELF = 3, PARTY = 4 }
+local ROW_CAP   = 2      -- your rolls per row (2 melee + 2 mages)
+
+local function my_row_count(group)
+    local n = 0
+    for _, e in ipairs(state.active) do
+        if e.mine and e.group == group then n = n + 1 end
+    end
+    return n
+end
+
+-- Decide MELEE / MAGES for one of your new rolls, and say why (for the log).
+local function choose_group(actor, targets, def)
+    local g, melee, mage = classify(actor, targets)
+    if g == 'PARTY' then return g, 'other COR' end
+    local pin = type(cfg.roll_group) == 'table' and cfg.roll_group[def.name] or nil
+    if pin == 'MELEE' or pin == 'MAGES' then return pin, 'you pinned it there' end
+    if g == 'SELF' then return g, 'only hit you' end
+    local other = (g == 'MELEE') and 'MAGES' or 'MELEE'
+    if melee == mage then
+        if my_row_count(g) > my_row_count(other) then
+            return other, ('tie %d melee / %d mages, %s has room'):format(melee, mage, other)
+        end
+        return g, ('tie %d melee / %d mages'):format(melee, mage)
+    end
+    if my_row_count(g) >= ROW_CAP and my_row_count(other) < ROW_CAP then
+        return other, ('%s already has %d rolls'):format(g, ROW_CAP)
+    end
+    return g, ('%d melee / %d mages hit'):format(melee, mage)
+end
 
 local function latest_du_entry(actor)
     local best = nil
@@ -460,8 +490,10 @@ local function on_action(act)
             mine       = mine,
             started    = now,
             targets    = targets,
-            group      = classify(act.actor, targets),
         }
+        local why
+        entry.group, why = choose_group(act.actor, targets, def)
+        if mine then dlog.add('ROLL', ('%s -> %s row (%s)'):format(def.name, entry.group, why)) end
         dlog.add('ROLL', ('%s placed in %s row (%d targets)'):format(def.name, entry.group, #act.targets), true)
         state.next_id = state.next_id + 1
         table.insert(state.active, entry)
@@ -1677,6 +1709,16 @@ local function draw_column(e, m, cx, top, dl, wx, wy, t, now)
         text_at(px + 6 * S, py + 2 * S, sty.fg, sty.chip, m.cscale, false)
     end
 
+    -- right-click a die: move it to the other row / pin it
+    if e.mine and not state.no_hit and imgui.IsMouseClicked(1) then
+        local okh, over = pcall(function () return imgui.IsMouseHoveringRect({ sx, sy }, { sx + TS, sy + TS }) end)
+        if okh and over then
+            state.die_ctx = e
+            state.die_ctx_frame = t
+            imgui.OpenPopup('nard_die_ctx')
+        end
+    end
+
     -- "?" marker on the die corner
     if m.hover then
         local qr = 5.5 * S
@@ -2059,7 +2101,8 @@ local function current_tip(t)
         end
     end
     if soon then
-        return { title = 'RE-ROLL SOON', lines = { ('%s wears off in %s.'):format(soon.e.def.name, fmt_time(soon.left)) }, col = TIP_COL.amber }
+        return { title = 'RE-ROLL SOON', key = 'reroll:' .. soon.e.def.name,
+                 lines = { ('%s wears off in %s.'):format(soon.e.def.name, fmt_time(soon.left)) }, col = TIP_COL.amber }
     end
 
     -- Phantom Roll is up and you have room for another roll
@@ -2078,7 +2121,7 @@ end
 
 -- frameless: glowing bulb + coloured title, outlined lines, centered in W; returns height
 local function draw_tip(dl, wx, wy, x, y, W, S, t, tip)
-    local key = tip.title .. '|' .. (tip.lines[1] or '')
+    local key = tip.key or (tip.title .. '|' .. (tip.lines[1] or ''))
     if key ~= tip_state.key then
         tip_state.key, tip_state.since = key, t
         dlog.add('TIP', ('%s - %s  (drawn at %d,%d)'):format(tip.title, tip.lines[1] or '', wx + x, wy + y))
@@ -2827,11 +2870,59 @@ local function set_free(on)
     settings.save()
 end
 
+
+-- right-click menu on one of your dice
+local function die_context_menu()
+    if imgui.BeginPopup('nard_die_ctx') then
+        local e = state.die_ctx
+        if e and e.def then
+            local name = e.def.name
+            imgui.TextColored(C.gold, name)
+            imgui.Separator()
+            local other = (e.group == 'MAGES') and 'MELEE' or 'MAGES'
+            if imgui.Selectable('Move to ' .. other .. ' row', false) then
+                e.group = other
+                if type(cfg.roll_group) ~= 'table' then cfg.roll_group = {} end
+                cfg.roll_group[name] = other
+                settings.save()
+                dlog.add('UI', ('%s moved to %s - it will always go there (right-click > Auto sort to undo)'):format(name, other))
+            end
+            local pinned = type(cfg.roll_group) == 'table' and cfg.roll_group[name]
+            if pinned then
+                if imgui.Selectable('Auto sort ' .. name .. ' again', false) then
+                    cfg.roll_group[name] = nil
+                    settings.save()
+                    dlog.add('UI', name .. ' back to auto sort')
+                end
+            else
+                if imgui.Selectable('Always put ' .. name .. ' in ' .. (e.group or 'MELEE'), false) then
+                    if type(cfg.roll_group) ~= 'table' then cfg.roll_group = {} end
+                    cfg.roll_group[name] = e.group or 'MELEE'
+                    settings.save()
+                    dlog.add('UI', ('%s pinned to %s'):format(name, e.group or 'MELEE'))
+                end
+            end
+            imgui.Separator()
+            if imgui.Selectable('Remove this die', false) then
+                for i, x in ipairs(state.active) do
+                    if x == e then table.remove(state.active, i) break end
+                end
+                dlog.add('UI', name .. ' die removed')
+            end
+        end
+        imgui.EndPopup()
+    end
+end
+
+local function die_menu_opened_now()
+    return state.die_ctx_frame ~= nil and state.die_ctx_frame == anim_time()
+end
+
 local function rclick_open(id)
     local hflag = ImGuiHoveredFlags_AllowWhenBlockedByActiveItem or 128
     local ok, hv = pcall(function () return imgui.IsWindowHovered(hflag) end)
     if not ok then hv = imgui.IsWindowHovered() end
-    if hv and imgui.IsMouseClicked(1) then imgui.OpenPopup(id) end
+    if hv and imgui.IsMouseClicked(1) and not die_menu_opened_now() then imgui.OpenPopup(id) end
     return hv
 end
 
@@ -2913,13 +3004,17 @@ local function piece_window(key, drawfn)
         local wx, wy = imgui.GetWindowPos()
         local dl     = imgui.GetWindowDrawList()
 
-        local hv = rclick_open('nard_ctx_' .. key)
+        local hflag = ImGuiHoveredFlags_AllowWhenBlockedByActiveItem or 128
+        local okh, hv = pcall(function () return imgui.IsWindowHovered(hflag) end)
+        if not okh then hv = imgui.IsWindowHovered() end
         if hv then state.phover[key] = t + 0.5 end
         local hovered = (state.phover[key] or 0) > t
 
         state.no_hit = p.unlocked          -- no click-catching buttons while dragging
         drawfn(dl, wx, wy, bx, by, hovered and not p.unlocked, p.unlocked)
         state.no_hit = false
+        rclick_open('nard_ctx_' .. key)
+        die_context_menu()
 
         if p.unlocked then
             local ww, wh = imgui.GetWindowSize()
@@ -3044,6 +3139,7 @@ local function draw_overlay()
         end
         rclick_open('nard_ctx_main')
         main_context_menu()
+        die_context_menu()
         local x, y = imgui.GetWindowPos()
         if math.abs(x - cfg.pos_x) > 0.5 or math.abs(y - cfg.pos_y) > 0.5 then
             cfg.pos_x, cfg.pos_y = x, y
