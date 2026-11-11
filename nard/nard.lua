@@ -24,7 +24,7 @@
 
 addon.name    = 'nard'
 addon.author  = 'Jboor'
-addon.version = '1.5.1'
+addon.version = '1.5.2'
 addon.desc    = 'Floating Corsair roll tracker (Phoenix Lv75)'
 addon.link    = ''
 
@@ -349,9 +349,9 @@ local function classify(actor, targets)
 end
 
 local ROW_ORDER = { MELEE = 1, MAGES = 2, SELF = 3, PARTY = 4 }
-local ROW_CAP   = 2      -- your rolls per row (2 melee + 2 mages)
+local grp = { CAP = 2 }  -- row helpers (your rolls per row: 2 melee + 2 mages)
 
-local function my_row_count(group)
+function grp.count(group)
     local n = 0
     for _, e in ipairs(state.active) do
         if e.mine and e.group == group then n = n + 1 end
@@ -359,22 +359,51 @@ local function my_row_count(group)
     return n
 end
 
+-- Which row a roll belongs in by what it does. Rolls not listed (Corsair's,
+-- Magus's, Dancer's) help everyone and get sorted by who they hit.
+rolls.SIDE = {
+    [98]  = 'MELEE',  -- Fighter's   (Double Attack)
+    [99]  = 'MELEE',  -- Monk's      (Subtle Blow)
+    [103] = 'MELEE',  -- Rogue's     (Crit)
+    [104] = 'MELEE',  -- Gallant's   (damage taken, tank)
+    [105] = 'MELEE',  -- Chaos       (Attack)
+    [106] = 'MELEE',  -- Beast       (pet Attack)
+    [108] = 'MELEE',  -- Hunter's    (Accuracy)
+    [109] = 'MELEE',  -- Samurai     (Store TP)
+    [110] = 'MELEE',  -- Ninja       (Evasion)
+    [111] = 'MELEE',  -- Drachen     (pet Accuracy)
+    [115] = 'MELEE',  -- Puppet      (pet MAB)
+    [100] = 'MAGES',  -- Healer's    (Cure potency)
+    [101] = 'MAGES',  -- Wizard's    (MAB)
+    [102] = 'MAGES',  -- Warlock's   (Magic Accuracy)
+    [107] = 'MAGES',  -- Choral      (spell interruption)
+    [112] = 'MAGES',  -- Evoker's    (Refresh)
+    [117] = 'MAGES',  -- Scholar's   (Conserve MP)
+}
+
+function grp.pinned(def)
+    local pin = type(cfg.roll_group) == 'table' and cfg.roll_group[def.name] or nil
+    if pin == 'MELEE' or pin == 'MAGES' then return pin end
+    return nil
+end
+
 -- Decide MELEE / MAGES for one of your new rolls, and say why (for the log).
 local function choose_group(actor, targets, def)
     local g, melee, mage = classify(actor, targets)
     if g == 'PARTY' then return g, 'other COR' end
-    local pin = type(cfg.roll_group) == 'table' and cfg.roll_group[def.name] or nil
-    if pin == 'MELEE' or pin == 'MAGES' then return pin, 'you pinned it there' end
+    local pin = grp.pinned(def)
+    if pin then return pin, 'you pinned it there' end
+    if rolls.SIDE[def.id] then return rolls.SIDE[def.id], rolls.SIDE[def.id]:lower() .. ' roll' end
     if g == 'SELF' then return g, 'only hit you' end
     local other = (g == 'MELEE') and 'MAGES' or 'MELEE'
     if melee == mage then
-        if my_row_count(g) > my_row_count(other) then
+        if grp.count(g) > grp.count(other) then
             return other, ('tie %d melee / %d mages, %s has room'):format(melee, mage, other)
         end
         return g, ('tie %d melee / %d mages'):format(melee, mage)
     end
-    if my_row_count(g) >= ROW_CAP and my_row_count(other) < ROW_CAP then
-        return other, ('%s already has %d rolls'):format(g, ROW_CAP)
+    if grp.count(g) >= grp.CAP and grp.count(other) < grp.CAP then
+        return other, ('%s already has %d rolls'):format(g, grp.CAP)
     end
     return g, ('%d melee / %d mages hit'):format(melee, mage)
 end
@@ -723,6 +752,15 @@ local function restore_rolls()
     end
     if count + extra > 0 then
         dlog.add('ROLL', ('Restored %d roll(s) from last session, %d found on your buffs'):format(count, extra))
+    end
+    for _, e in ipairs(state.active) do
+        if (e.mine or e.unknown) and not e.busted then
+            local want = grp.pinned(e.def) or rolls.SIDE[e.def.id]
+            if want and e.group ~= want then
+                dlog.add('ROLL', ('%s moved %s -> %s (%s roll)'):format(e.def.name, tostring(e.group), want, want:lower()))
+                e.group = want
+            end
+        end
     end
     last_sig = nil
 end
@@ -2170,7 +2208,7 @@ end
 -- Party range dots: is each party member close enough to get your roll?
 -- Melee on top, mages below. Green = in range, red ring = out, grey = away.
 ----------------------------------------------------------------------------
-local LUZAF_RING_ID = 15810
+local RNG = { LUZAF = 15810 }
 local JOB_ABBR = { 'WAR', 'MNK', 'WHM', 'BLM', 'RDM', 'THF', 'PLD', 'DRK', 'BST', 'BRD',
                    'RNG', 'SAM', 'NIN', 'DRG', 'SMN', 'BLU', 'COR', 'PUP', 'DNC', 'SCH' }
 local range_cache = { t = -1, members = {}, luzaf = false, counts = {} }
@@ -2184,7 +2222,7 @@ local function has_luzaf()
             if idx ~= 0 then
                 local cont = bit.rshift(bit.band(eq.Index, 0xFF00), 8)
                 local item = inv:GetContainerItem(cont, idx)
-                if item ~= nil and item.Id == LUZAF_RING_ID then return true end
+                if item ~= nil and item.Id == RNG.LUZAF then return true end
             end
         end
         return false
@@ -2347,13 +2385,13 @@ end
 -- ---------------------------------------------------------------------------
 -- Range styles: dots (default), orbs, crystals, rings, radar
 -- ---------------------------------------------------------------------------
-local RANGE_STYLES = { 'dots', 'orbs', 'crystals', 'rings', 'radar' }
-local RANGE_STYLE_NAME = { dots = 'Dots', orbs = 'Job orbs', crystals = 'Crystals', rings = 'Distance rings', radar = 'Mini radar' }
-local GREEN3 = { 0.43, 0.90, 0.55 }
+RNG.STYLES = { 'dots', 'orbs', 'crystals', 'rings', 'radar' }
+RNG.NAME = { dots = 'Dots', orbs = 'Job orbs', crystals = 'Crystals', rings = 'Distance rings', radar = 'Mini radar' }
+RNG.GREEN = { 0.43, 0.90, 0.55 }
 
 local function range_style()
     local s = cfg.range_style
-    if RANGE_STYLE_NAME[s] then return s end
+    if RNG.NAME[s] then return s end
     return 'dots'
 end
 
@@ -2390,8 +2428,8 @@ local function draw_orb(dl, wx, wy, cx, cy, S, mbr, ok, t, i)
     local scx, scy, r = wx + cx, wy + cy, 10.5 * S
     local p = 0.5 + 0.5 * math.sin(t * 2.0 + i)
     if ok then
-        dl:AddCircleFilled({ scx, scy }, r + 5 * S, col32({ GREEN3[1], GREEN3[2], GREEN3[3], 0.08 + 0.06 * p }), 20)
-        dl:AddCircleFilled({ scx, scy }, r + 2.5 * S, col32({ GREEN3[1], GREEN3[2], GREEN3[3], 0.15 + 0.08 * p }), 20)
+        dl:AddCircleFilled({ scx, scy }, r + 5 * S, col32({ RNG.GREEN[1], RNG.GREEN[2], RNG.GREEN[3], 0.08 + 0.06 * p }), 20)
+        dl:AddCircleFilled({ scx, scy }, r + 2.5 * S, col32({ RNG.GREEN[1], RNG.GREEN[2], RNG.GREEN[3], 0.15 + 0.08 * p }), 20)
     end
     dl:AddCircleFilled({ scx, scy + 1.5 * S }, r, col32({ 0, 0, 0, 0.45 }), 20)
     dl:AddCircleFilled({ scx, scy }, r, col32(ok and { 0.12, 0.48, 0.24, 1 } or { 0.16, 0.18, 0.23, 1 }), 20)
@@ -2407,11 +2445,11 @@ local function draw_crystal(dl, wx, wy, cx, cy, S, mbr, ok, t, i)
     local x, y, s = wx + cx, wy + cy, 8 * S
     local p = 0.5 + 0.5 * math.sin(t * 2.0 + i)
     local top, rt, bot, lf, mid = { x, y - s * 1.25 }, { x + s * 0.75, y }, { x, y + s * 1.25 }, { x - s * 0.75, y }, { x, y }
-    if ok then dl:AddCircleFilled({ x, y }, s * 1.6, col32({ GREEN3[1], GREEN3[2], GREEN3[3], 0.10 + 0.08 * p }), 18) end
+    if ok then dl:AddCircleFilled({ x, y }, s * 1.6, col32({ RNG.GREEN[1], RNG.GREEN[2], RNG.GREEN[3], 0.10 + 0.08 * p }), 18) end
     local shade = ok and { 1, 0.75, 0.55, 0.85 } or { 0.35, 0.28, 0.22, 0.30 }
     local faces = { { top, rt }, { rt, bot }, { bot, lf }, { lf, top } }
     for k, f in ipairs(faces) do
-        local c = ok and { GREEN3[1], GREEN3[2], GREEN3[3], shade[k] } or { 0.59, 0.61, 0.67, shade[k] }
+        local c = ok and { RNG.GREEN[1], RNG.GREEN[2], RNG.GREEN[3], shade[k] } or { 0.59, 0.61, 0.67, shade[k] }
         dl:AddTriangleFilled(f[1], f[2], mid, col32(c))
     end
     local oc = col32(ok and { 1, 1, 1, 0.85 } or (mbr.dist and { 1.0, 0.43, 0.39, 0.75 } or { 0.55, 0.58, 0.65, 0.8 }))
@@ -2429,7 +2467,7 @@ local function draw_dist_ring(dl, wx, wy, cx, cy, S, mbr, ok, t, i, R)
     local d = mbr.dist
     local cc
     if not d then cc = { 0.55, 0.58, 0.65 }
-    elseif d <= R then cc = (d > R * 0.75) and { 1.0, 0.79, 0.36 } or GREEN3
+    elseif d <= R then cc = (d > R * 0.75) and { 1.0, 0.79, 0.36 } or RNG.GREEN
     else cc = { 1.0, 0.43, 0.39 } end
     local f = d and math.max(0.08, math.min(1, 1 - d / (R * 1.6))) or 0.08
     arc(dl, scx, scy, r, -math.pi / 2, -math.pi / 2 + math.pi * 2 * f, col32({ cc[1], cc[2], cc[3], 0.95 }), 3 * S)
@@ -2471,9 +2509,9 @@ local function draw_range_row(dl, wx, wy, x, y, W, S, t, g, gi, st, R)
 end
 
 -- mini radar: you in the middle, roll range circle, members at their real direction
-local RADAR_R = 46
+RNG.RADAR_R = 46
 local function draw_radar(dl, wx, wy, x, y, W, S, t, rc, R)
-    local RR = RADAR_R * S
+    local RR = RNG.RADAR_R * S
     local cx, cy = x + W / 2, y + RR + 6 * S
     local scx, scy = wx + cx, wy + cy
     local sc = RR / (R * 1.6)
@@ -2483,10 +2521,10 @@ local function draw_radar(dl, wx, wy, x, y, W, S, t, rc, R)
     for k = 0, 13 do
         local a0, a1 = sweep - k * 0.05, sweep - (k + 1) * 0.05
         dl:AddTriangleFilled({ scx, scy }, { scx + math.cos(a0) * RR, scy + math.sin(a0) * RR },
-            { scx + math.cos(a1) * RR, scy + math.sin(a1) * RR }, col32({ GREEN3[1], GREEN3[2], GREEN3[3], 0.12 * (1 - k / 14) }))
+            { scx + math.cos(a1) * RR, scy + math.sin(a1) * RR }, col32({ RNG.GREEN[1], RNG.GREEN[2], RNG.GREEN[3], 0.12 * (1 - k / 14) }))
     end
-    dl:AddCircleFilled({ scx, scy }, R * sc, col32({ GREEN3[1], GREEN3[2], GREEN3[3], 0.08 }), 36)
-    dl:AddCircle({ scx, scy }, R * sc, col32({ GREEN3[1], GREEN3[2], GREEN3[3], 0.6 }), 36, 1.4)
+    dl:AddCircleFilled({ scx, scy }, R * sc, col32({ RNG.GREEN[1], RNG.GREEN[2], RNG.GREEN[3], 0.08 }), 36)
+    dl:AddCircle({ scx, scy }, R * sc, col32({ RNG.GREEN[1], RNG.GREEN[2], RNG.GREEN[3], 0.6 }), 36, 1.4)
     centered_text(cx + R * sc * 0.72, cy - R * sc * 0.72, { 0.60, 0.95, 0.69, 1 }, ('%d\''):format(R), 0.56 * S, true)
 
     local flip = cfg.radar_flip and -1 or 1
@@ -2503,8 +2541,8 @@ local function draw_radar(dl, wx, wy, x, y, W, S, t, rc, R)
             if len > RR * 0.95 then bx, by = bx / len * RR * 0.95, by / len * RR * 0.95 end
             local px, py = cx + bx, cy + by
             local tint = mbr.mage and ROW_TINT.MAGES or ROW_TINT.MELEE
-            if ok then dl:AddCircleFilled({ wx + px, wy + py }, 7 * S, col32({ GREEN3[1], GREEN3[2], GREEN3[3], 0.18 }), 14) end
-            dl:AddCircleFilled({ wx + px, wy + py }, 4.2 * S, col32(ok and { GREEN3[1], GREEN3[2], GREEN3[3], 1 } or { 0.12, 0.13, 0.17, 0.9 }), 14)
+            if ok then dl:AddCircleFilled({ wx + px, wy + py }, 7 * S, col32({ RNG.GREEN[1], RNG.GREEN[2], RNG.GREEN[3], 0.18 }), 14) end
+            dl:AddCircleFilled({ wx + px, wy + py }, 4.2 * S, col32(ok and { RNG.GREEN[1], RNG.GREEN[2], RNG.GREEN[3], 1 } or { 0.12, 0.13, 0.17, 0.9 }), 14)
             dl:AddCircle({ wx + px, wy + py }, 4.2 * S, col32(ok and { tint[1], tint[2], tint[3], 1 } or { 1.0, 0.43, 0.39, 0.85 }), 14, 1.5)
             centered_text(px, py - 9 * S, { tint[1], tint[2], tint[3], 1 }, JOB_ABBR[mbr.job] or '?', 0.52 * S, true)
             member_hit(('##nard_rdr_%d'):format(i), px, py, 6 * S, mbr, R)
@@ -2544,7 +2582,7 @@ end
 local function range_width(S, rc)
     local st = range_style()
     if st == 'dots' then return range_width_dots(S, rc) end
-    if st == 'radar' then return math.max(RADAR_R * 2 * S + 16 * S, 150 * S) end
+    if st == 'radar' then return math.max(RNG.RADAR_R * 2 * S + 16 * S, 150 * S) end
     local dotw = style_metrics(st, S)
     local w = 0
     for _, g in ipairs(range_groups(rc)) do
@@ -3266,12 +3304,12 @@ local function draw_config()
                 imgui.PopItemWidth()
                 help_marker('##h_range_base', "How far Phantom Roll reaches from you, in yalms. Doubled automatically while you wear Luzaf's Ring.")
                 imgui.PushItemWidth(W - 70)
-                if imgui.BeginCombo('##range_style', 'Style: ' .. RANGE_STYLE_NAME[range_style()]) then
-                    for _, k in ipairs(RANGE_STYLES) do
-                        if imgui.Selectable(RANGE_STYLE_NAME[k], range_style() == k) then
+                if imgui.BeginCombo('##range_style', 'Style: ' .. RNG.NAME[range_style()]) then
+                    for _, k in ipairs(RNG.STYLES) do
+                        if imgui.Selectable(RNG.NAME[k], range_style() == k) then
                             cfg.range_style = k
                             settings.save()
-                            dlog.add('CFG', 'Range style = ' .. RANGE_STYLE_NAME[k])
+                            dlog.add('CFG', 'Range style = ' .. RNG.NAME[k])
                         end
                     end
                     imgui.EndCombo()
