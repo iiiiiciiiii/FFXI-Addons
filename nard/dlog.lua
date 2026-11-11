@@ -24,10 +24,11 @@ dlog.cats = {
     CMD   = { 0.82, 0.68, 1.00, 1.0 },
     CFG   = { 0.80, 0.80, 0.80, 1.0 },
     INFO  = { 0.92, 0.90, 0.84, 1.0 },
+    AUTO  = { 0.45, 0.95, 0.60, 1.0 },
     TIP   = { 1.00, 0.85, 0.45, 1.0 },
     ERR   = { 1.00, 0.20, 0.20, 1.0 },
 }
-dlog.order = { 'ALL', 'ROLL', 'DBLUP', 'BUST', 'TIP', 'PKT', 'UI', 'CMD', 'CFG', 'INFO', 'ERR' }
+dlog.order = { 'ALL', 'ROLL', 'DBLUP', 'BUST', 'TIP', 'AUTO', 'PKT', 'UI', 'CMD', 'CFG', 'INFO', 'ERR' }
 
 function dlog.add(cat, msg, verbose_only)
     if verbose_only and not dlog.verbose then return end

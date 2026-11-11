@@ -24,7 +24,7 @@
 
 addon.name    = 'nard'
 addon.author  = 'Jboor'
-addon.version = '1.6.2'
+addon.version = '1.7.0'
 addon.desc    = 'Floating Corsair roll tracker (Phoenix Lv75)'
 addon.link    = ''
 
@@ -84,6 +84,11 @@ local defaults = T{
     range_base = 8,       -- Phantom Roll range in yalms (doubled with Luzaf's Ring)
     range_style = 'dots', -- dots / orbs / crystals / rings / radar
     roll_group = T{},     -- rolls you pinned to a row: [roll name] = 'MELEE' / 'MAGES'
+    auto_on    = false,   -- Auto: keep rolls + one song up
+    auto_r1    = 'Chaos Roll', auto_r2 = "Hunter's Roll", auto_r3 = "Healer's Roll", auto_r4 = "Corsair's Roll",
+    auto_reroll = 30, auto_need = 1, auto_du_max = 5, auto_du_unlucky = true,
+    auto_song  = '', auto_resing = 20, auto_follow = '', auto_camp = 3,
+    auto_typing = true, auto_manual = true, auto_bust = true,
     radar_flip = false,   -- flip the radar if north / south look swapped
     s_range    = 1.0,
     s_tip      = 1.0,
@@ -765,6 +770,8 @@ local function restore_rolls()
     last_sig = nil
 end
 
+local AUTO = { status = 'Off', busy_until = 0, next_t = 0, manual_until = 0, following = nil }
+
 local was_active = nil
 local function tick()
     local active = cor_active()
@@ -782,6 +789,10 @@ local function tick()
         restore_rolls()
         verify_buffs(now)
         save_rolls(false)
+        if cfg.auto_on and main_is_cor() and AUTO.step then
+            local ok, err = pcall(AUTO.step, anim_time())
+            if not ok then dlog.add('ERR', 'Auto: ' .. tostring(err)) end
+        end
     end
     for i = #state.active, 1, -1 do
         local e = state.active[i]
@@ -2775,6 +2786,22 @@ local function draw_overlay_full(list, now)
         if bhov then tooltip_text('Debug log  (/nard log)') end
     end
 
+    if cfg.auto_on then
+        -- small AUTO badge next to where the wordmark sits; hover for what it's doing
+        local tag = 'AUTO'
+        local tw, th = text_size(tag, 0.62 * S)
+        local ax, ay = bx + 36 * S, by + r - (th + 4 * S) / 2
+        local p = 0.5 + 0.5 * math.sin(t * 2.0)
+        pill(dl, wx, wy, ax, ay, tw + 16 * S, th + 4 * S, { 0.04, 0.17, 0.09, 0.92 }, { 0.40, 0.88, 0.52, 0.6 + 0.3 * p })
+        dl:AddCircleFilled({ wx + ax + 6 * S, wy + ay + (th + 4 * S) / 2 }, 2 * S, col32({ 0.45, 0.95, 0.55, 0.6 + 0.4 * p }), 10)
+        text_at(ax + 10 * S, ay + 2 * S, C.green, tag, 0.62 * S, false)
+        if not state.no_hit then
+            imgui.SetCursorPos({ ax, ay })
+            imgui.InvisibleButton('##nard_autobadge', { tw + 16 * S, th + 4 * S })
+            if imgui.IsItemHovered() then tooltip_text('Auto: ' .. (AUTO.status or '') .. '\n/nard auto off to stop') end
+        end
+    end
+
     local y = by + r * 2 + 10 * S
     if cfg.show_cd then
         local ph = draw_cd_row(dl, wx, wy, bx, y - 6 * S, W, S * sz('s_cd'), t)
@@ -3325,9 +3352,274 @@ local function place_window(dx, dy)
     imgui.SetNextWindowPos({ x, y }, ImGuiCond_Appearing)
 end
 
--- Settings window: small tabbed panel (General / Rolls / Range / Sizes / Debug)
+----------------------------------------------------------------------------
+-- Auto (COR + sub BRD): keeps your 4 rolls and one song up, follows a camp
+-- anchor only when it needs to, and stands still otherwise.
+-- (AUTO table is declared earlier; its functions live here.)
+----------------------------------------------------------------------------
+AUTO.SONGS = {   -- sub BRD songs up to level 37
+    { n = "Knight's Minne",    lvl = 1,  st = 197 }, { n = "Valor Minuet",     lvl = 3,  st = 198 },
+    { n = "Army's Paeon",      lvl = 5,  st = 195 }, { n = "Sword Madrigal",   lvl = 11, st = 199 },
+    { n = "Sheepfoe Mambo",    lvl = 13, st = 201 }, { n = "Army's Paeon II",  lvl = 15, st = 195 },
+    { n = "Knight's Minne II", lvl = 21, st = 197 }, { n = "Valor Minuet II",  lvl = 23, st = 198 },
+    { n = "Mage's Ballad",     lvl = 25, st = 196 }, { n = "Army's Paeon III", lvl = 35, st = 195 },
+    { n = "Raptor Mazurka",    lvl = 37, st = 219 },
+}
+AUTO.SONG_TIME = 120          -- song length (seconds) without instrument bonuses
+AUTO.SLOTS = { { 'auto_r1', 'MELEE' }, { 'auto_r2', 'MELEE' }, { 'auto_r3', 'MAGES' }, { 'auto_r4', 'MAGES' } }
+
+function AUTO.set(s)
+    if s ~= AUTO.status then
+        AUTO.status = s
+        dlog.add('AUTO', s, true)
+    end
+end
+
+function AUTO.cmd(c, why)
+    pcall(function () AshitaCore:GetChatManager():QueueCommand(1, c) end)
+    dlog.add('AUTO', c .. (why and ('   (' .. why .. ')') or ''))
+end
+
+function AUTO.levels()
+    local mj, ml, sj, sl = 0, 0, 0, 0
+    pcall(function ()
+        local p = player()
+        mj, ml, sj, sl = p:GetMainJob(), p:GetMainJobLevel(), p:GetSubJob(), p:GetSubJobLevel()
+    end)
+    return mj, ml, sj, sl
+end
+
+function AUTO.song_def(name)
+    for _, s in ipairs(AUTO.SONGS) do if s.n == name then return s end end
+    return nil
+end
+
+function AUTO.my_pos()
+    local ok, x, y = pcall(function ()
+        local ent = AshitaCore:GetMemoryManager():GetEntity()
+        local me  = party():GetMemberTargetIndex(0)
+        return ent:GetLocalPositionX(me), ent:GetLocalPositionY(me)
+    end)
+    if ok then return x, y end
+    return nil
+end
+
+function AUTO.my_status()
+    local ok, st = pcall(function ()
+        return AshitaCore:GetMemoryManager():GetEntity():GetStatus(party():GetMemberTargetIndex(0))
+    end)
+    return ok and st or 0
+end
+
+function AUTO.typing()
+    local ok, v = pcall(function () return AshitaCore:GetChatManager():IsInputOpen() end)
+    return ok and v ~= nil and v ~= false and v ~= 0
+end
+
+-- party member by name: { idx, dist, x, y }
+function AUTO.member(name)
+    if name == nil or name == '' then return nil end
+    local out = nil
+    pcall(function ()
+        local p   = party()
+        local ent = AshitaCore:GetMemoryManager():GetEntity()
+        for i = 1, 5 do
+            if p:GetMemberIsActive(i) == 1 and p:GetMemberName(i) == name then
+                local idx = p:GetMemberTargetIndex(i)
+                if idx and idx ~= 0 then
+                    local d2 = ent:GetDistance(idx)
+                    out = { idx = idx, dist = (d2 and d2 > 0) and math.sqrt(d2) or nil,
+                            x = ent:GetLocalPositionX(idx), y = ent:GetLocalPositionY(idx) }
+                end
+            end
+        end
+    end)
+    return out
+end
+
+function AUTO.follow(name, why)
+    if AUTO.following == name then return end
+    AUTO.cmd('/follow ' .. name, why)
+    AUTO.following = name
+end
+
+function AUTO.stop_follow(why)
+    if not AUTO.following then return end
+    local ok = pcall(function ()
+        local af = AshitaCore:GetMemoryManager():GetAutoFollow()
+        af:SetIsAutoRunning(0)
+        af:SetTargetIndex(0)
+        af:SetTargetServerId(0)
+    end)
+    if not ok and not AUTO.warned_follow then
+        AUTO.warned_follow = true
+        dlog.add('ERR', 'Could not stop /follow on this Ashita build - move a step to stop it')
+    end
+    dlog.add('AUTO', 'Stopped following' .. (why and ('   (' .. why .. ')') or ''))
+    AUTO.following = nil
+end
+
+-- in-range count for a group (uses the party range scan)
+function AUTO.in_range(group, t)
+    local rc = range_scan(t)
+    local R  = roll_range()
+    local inn, n = 0, 0
+    for _, m in ipairs(rc.members) do
+        if (group == 'MAGES') == m.mage then
+            n = n + 1
+            if m.dist and m.dist <= R then inn = inn + 1 end
+        end
+    end
+    return inn, n
+end
+
+-- first roll slot that is missing or about to wear off
+function AUTO.due_roll(now)
+    local _, ml = AUTO.levels()
+    for _, slot in ipairs(AUTO.SLOTS) do
+        local name = cfg[slot[1]]
+        local def  = (type(name) == 'string' and name ~= '') and rolls.by_name[name:lower()] or nil
+        if def and (ml == 0 or def.lvl <= ml) then
+            local mine = nil
+            for _, e in ipairs(state.active) do
+                if e.mine and not e.busted and e.def == def then mine = e end
+            end
+            local left = mine and (mine.started + ROLL_DURATION - now) or -1
+            if mine == nil or left <= (tonumber(cfg.auto_reroll) or 30) then
+                return { name = def.name, group = slot[2], why = mine and ('%ds left'):format(left) or 'not up' }
+            end
+        end
+    end
+    return nil
+end
+
+-- song that needs singing now, or nil
+function AUTO.song_due(now)
+    local name = cfg.auto_song
+    if type(name) ~= 'string' or name == '' then return nil end
+    local s = AUTO.song_def(name)
+    if s == nil then return nil end
+    local mj, ml, sj, sl = AUTO.levels()
+    local blvl = (mj == 10) and ml or ((sj == 10) and sl or 0)
+    if blvl < s.lvl then return nil end
+    local has = my_buffs()[s.st] == true
+    if has and not AUTO.song_seen then AUTO.sang_at = now end
+    AUTO.song_seen = has
+    if not has then return s, 'not up' end
+    local left = (AUTO.sang_at or now) + AUTO.SONG_TIME - now
+    if left <= (tonumber(cfg.auto_resing) or 20) then return s, ('%ds left'):format(left) end
+    return nil
+end
+
+-- stay at camp: follow the anchor when far, stop once you're next to them and they stand still
+function AUTO.camp(t)
+    local m = AUTO.member(cfg.auto_follow)
+    if m == nil or m.dist == nil then return end
+    if AUTO.anchor_x == nil or math.abs(m.x - AUTO.anchor_x) + math.abs(m.y - AUTO.anchor_y) > 0.4 then
+        AUTO.anchor_x, AUTO.anchor_y, AUTO.anchor_still = m.x, m.y, t
+    end
+    local camp = tonumber(cfg.auto_camp) or 3
+    if AUTO.following then
+        if m.dist <= camp + 0.5 and t - (AUTO.anchor_still or t) >= 1.5 then
+            AUTO.stop_follow('at camp next to ' .. cfg.auto_follow)
+        end
+    elseif m.dist > camp + 8 then
+        AUTO.follow(cfg.auto_follow, ('%s is %d\' away'):format(cfg.auto_follow, math.floor(m.dist)))
+    end
+end
+
+function AUTO.track_move(t)
+    local x, y = AUTO.my_pos()
+    if x == nil then return end
+    if AUTO.px ~= nil and not AUTO.following and t > AUTO.busy_until then
+        if math.abs(x - AUTO.px) + math.abs(y - AUTO.py) > 0.25 then AUTO.manual_until = t + 3 end
+    end
+    AUTO.px, AUTO.py = x, y
+end
+
+function AUTO.step(t)
+    if t < AUTO.next_t then return end
+    AUTO.next_t = t + 0.4
+    local now = os.time()
+
+    if not in_party() then AUTO.stop_follow('not in a party'); return AUTO.set('Waiting - not in a party') end
+    if i_am_dead() then AUTO.stop_follow('KO'); return AUTO.set('Paused - you are KO') end
+    local st = AUTO.my_status()
+    if st ~= 0 and st ~= 1 then return AUTO.set('Paused - resting / busy') end
+    if cfg.auto_typing and AUTO.typing() then return AUTO.set('Paused - typing') end
+    AUTO.track_move(t)
+    if cfg.auto_manual and t < AUTO.manual_until then return AUTO.set('Paused - you are moving') end
+    if t < AUTO.busy_until then return end
+
+    -- 1) Double-Up on your newest open roll
+    local open = nil
+    for _, e in ipairs(state.active) do
+        if e.mine and e.du_until and now <= e.du_until and not e.busted and e.value and e.value < 11 then
+            if open == nil or e.started > open.started then open = e end
+        end
+    end
+    if open and ability_recast(DU_RECAST_ID) <= 0 then
+        local v, def = open.value, open.def
+        local why = nil
+        if v ~= def.lucky then
+            if v <= (tonumber(cfg.auto_du_max) or 5) then why = ('total %d'):format(v)
+            elseif cfg.auto_du_unlucky and v == def.unlucky then why = ('unlucky %d'):format(v) end
+        end
+        if why then
+            if AUTO.following then AUTO.stop_follow('Double-Up'); AUTO.busy_until = t + 0.6; return end
+            AUTO.cmd('/ja "Double-Up" <me>', def.name .. ' ' .. why)
+            AUTO.busy_until = t + 2.5
+            return AUTO.set(('Double-Up %s (%s)'):format(def.name, why))
+        end
+    end
+
+    -- 2) rolls
+    local due = AUTO.due_roll(now)
+    if due and ability_recast(PR_RECAST_ID) <= 0 and not (cfg.auto_bust and my_bust()) then
+        local inn, n = AUTO.in_range(due.group, t)
+        local need = math.min(tonumber(cfg.auto_need) or 1, n)
+        if n == 0 or inn >= need then
+            if AUTO.following then AUTO.stop_follow('rolling ' .. due.name); AUTO.busy_until = t + 0.6; return end
+            AUTO.cmd(('/ja "%s" <me>'):format(due.name), ('%s, %d/%d %s in range'):format(due.why, inn, n, due.group:lower()))
+            AUTO.busy_until = t + 2.5
+            return AUTO.set('Rolled ' .. due.name)
+        end
+        if cfg.auto_follow ~= nil and cfg.auto_follow ~= '' then
+            AUTO.follow(cfg.auto_follow, ('%s due, only %d/%d %s in range'):format(due.name, inn, n, due.group:lower()))
+            return AUTO.set(('Moving to camp for %s (%d/%d in range)'):format(due.name, inn, n))
+        end
+        return AUTO.set(('Waiting - %s out of range for %s'):format(due.group:lower(), due.name))
+    end
+
+    -- 3) song
+    local song, why = AUTO.song_due(now)
+    if song then
+        if AUTO.following then AUTO.stop_follow('singing'); AUTO.busy_until = t + 0.6; return end
+        AUTO.cmd(('/ma "%s" <me>'):format(song.n), why)
+        AUTO.busy_until = t + 9
+        return AUTO.set('Singing ' .. song.n)
+    end
+
+    -- 4) stay at camp
+    AUTO.camp(t)
+    if due then
+        if cfg.auto_bust and my_bust() then return AUTO.set('Busted - no rolls until it wears off') end
+        return AUTO.set(('Next: %s when Phantom Roll is ready'):format(due.name))
+    end
+    AUTO.set(AUTO.following and ('Following ' .. cfg.auto_follow) or 'Watching - all rolls up')
+end
+
+function AUTO.toggle(on)
+    cfg.auto_on = on
+    settings.save()
+    if not on then AUTO.stop_follow('Auto off') end
+    AUTO.set(on and 'Starting' or 'Off')
+    dlog.add('AUTO', on and 'Auto ON' or 'Auto OFF')
+end
+
+-- Settings window: small tabbed panel (Main / Rolls / Range / Sizes / Auto / Debug)
 local UI = { LX = 92, TABS = {
-    { 'main', 'General' }, { 'rolls', 'Rolls' }, { 'range', 'Range' }, { 'size', 'Sizes' }, { 'debug', 'Debug' },
+    { 'main', 'Main' }, { 'rolls', 'Rolls' }, { 'range', 'Range' }, { 'size', 'Sizes' }, { 'auto', 'Auto' }, { 'debug', 'Debug' },
 } }
 
 function UI.tabbar(W)
@@ -3499,10 +3791,109 @@ function UI.tab_debug(W)
                     { 'Clear log', function () dlog.clear() end } })
 end
 
+
+-- a combo row: label left, combo right
+function UI.combo(W, label, id, current, items, on_pick, tip)
+    UI.label(label)
+    imgui.PushItemWidth(W - UI.LX - 14)
+    if imgui.BeginCombo('##' .. id, (current == nil or current == '') and 'None' or current) then
+        for _, it in ipairs(items) do
+            if imgui.Selectable(it == '' and 'None' or it, it == current) then on_pick(it) end
+        end
+        imgui.EndCombo()
+    end
+    imgui.PopItemWidth()
+    help_marker('##h_' .. id, tip)
+end
+
+function UI.section(txt)
+    imgui.Spacing()
+    imgui.TextColored(C.gold, txt)
+end
+
+function UI.tab_auto(W)
+    -- big on / off switch
+    local on = cfg.auto_on == true
+    local x0, y0 = imgui.GetCursorPos()
+    local wx, wy = imgui.GetWindowPos()
+    local dl = imgui.GetWindowDrawList()
+    local h = 24
+    if imgui.InvisibleButton('##auto_switch', { W, h }) then AUTO.toggle(not on); on = not on end
+    local hov = imgui.IsItemHovered()
+    dl:AddRectFilled({ wx + x0, wy + y0 }, { wx + x0 + W, wy + y0 + h },
+        col32(on and { 0.04, 0.17, 0.09, 0.95 } or { 0.13, 0.15, 0.20, 1 }), h / 2)
+    dl:AddRect({ wx + x0, wy + y0 }, { wx + x0 + W, wy + y0 + h },
+        col32(on and { 0.40, 0.88, 0.52, 0.9 } or { 0.55, 0.58, 0.65, hov and 0.8 or 0.45 }), h / 2, ROUND_ALL, 1.2)
+    local _, lh = text_size('A', 0.95)
+    text_at(x0 + 12, y0 + (h - lh) / 2, C.cream, 'Auto (COR / sub BRD)', 0.95, false)
+    local tag = on and 'ON' or 'OFF'
+    local tw = text_size(tag, 0.9)
+    local px = x0 + W - tw - 26
+    dl:AddRectFilled({ wx + px, wy + y0 + 4 }, { wx + px + tw + 16, wy + y0 + h - 4 },
+        col32(on and { 0.12, 0.48, 0.24, 1 } or { 0.16, 0.18, 0.23, 1 }), (h - 8) / 2)
+    text_at(px + 8, y0 + (h - lh) / 2, on and { 0.85, 1, 0.88, 1 } or C.steel, tag, 0.9, false)
+    imgui.SetCursorPos({ x0, y0 + h + 4 })
+    imgui.TextColored(on and C.green or C.dim, (on and '* ' or '') .. (AUTO.status or 'Off'))
+
+    local _, ml, sj, sl = AUTO.levels()
+    UI.section('Rolls')
+    help_marker('##h_auto_rolls', 'Kept up in this order. A roll is cast when it is missing or about to wear off, Phantom Roll is ready, and enough of that group is in range. Only rolls you can use at your COR level are listed.')
+    local list = { '' }
+    for _, r in ipairs(rolls.list) do
+        if ml == 0 or r.lvl <= ml then list[#list + 1] = r.name end
+    end
+    for i, slot in ipairs(AUTO.SLOTS) do
+        local key = slot[1]
+        UI.combo(W, (slot[2] == 'MELEE' and 'Melee ' or 'Mages ') .. (((i - 1) % 2) + 1), key, cfg[key], list, function (v)
+            cfg[key] = v; settings.save(); dlog.add('CFG', key .. ' = ' .. (v == '' and 'None' or v))
+        end, (slot[2] == 'MELEE') and 'A roll for your melee group.' or 'A roll for your mages group.')
+    end
+    UI.int(W, 'Re-roll at', 'auto_reroll', 30, 5, 120, function () return '%.0f s left' end,
+        'Re-roll a roll when it has this many seconds left.')
+    UI.int(W, 'Need in range', 'auto_need', 1, 1, 5, function () return 'at least %.0f' end,
+        'How many of that group must be in roll range before rolling (fewer if the group is smaller).')
+
+    UI.section('Double-Up')
+    UI.int(W, 'Double-Up', 'auto_du_max', 5, 0, 10, function (v) return (v < 0.5) and 'never' or 'while total <= %.0f' end,
+        "Double-Up while your total is this or lower. 5 or lower can't bust. It always stops on a Lucky number or 11.")
+    opt_checkbox('Also on Unlucky', 'auto_du_unlucky', 'Double-Up when you land on the Unlucky number, even above the limit above.')
+
+    UI.section('Song (sub BRD)')
+    local songs = { '' }
+    local blvl = (sj == 10) and sl or 37
+    for _, s in ipairs(AUTO.SONGS) do
+        if s.lvl <= blvl then songs[#songs + 1] = s.n end
+    end
+    UI.combo(W, 'Song', 'auto_song', cfg.auto_song, songs, function (v)
+        cfg.auto_song = v; settings.save(); dlog.add('CFG', 'auto song = ' .. (v == '' and 'None' or v))
+    end, 'One song kept up on yourself and the party around you. Only songs your sub BRD level can sing are listed.')
+    UI.int(W, 'Re-sing at', 'auto_resing', 20, 5, 60, function () return '%.0f s left' end,
+        'Sing again when the song has this many seconds left (songs last about 2 minutes).')
+
+    UI.section('Camp')
+    local names = { '' }
+    pcall(function ()
+        local p = party()
+        for i = 1, 5 do
+            if p:GetMemberIsActive(i) == 1 then names[#names + 1] = p:GetMemberName(i) end
+        end
+    end)
+    UI.combo(W, 'Follow', 'auto_follow', cfg.auto_follow, names, function (v)
+        cfg.auto_follow = v; settings.save(); dlog.add('CFG', 'auto follow = ' .. (v == '' and 'None' or v))
+    end, 'Who to stay with at camp. nard follows them only when a roll is due and the group is out of range, or when they move far away, then stops once you are next to them and they stand still.')
+    UI.int(W, 'Stop at', 'auto_camp', 3, 1, 8, function () return "%.0f' from them" end,
+        'How close to get before standing still.')
+
+    UI.section('Safety')
+    opt_checkbox('Pause while typing', 'auto_typing', 'Do nothing while the chat box is open.')
+    opt_checkbox('Pause when I move', 'auto_manual', 'If you move your character yourself, Auto waits 3 seconds after you stop.')
+    opt_checkbox('No rolls while busted', 'auto_bust', 'Do not start new rolls while the Bust penalty is on you.')
+end
+
 local function draw_config()
     local ws = state.cfg_win
     if not ws.open then return end
-    local W = 250
+    local W = 270
     push_theme()
     place_window(40, 60)
     local flags = bit.bor(ImGuiWindowFlags_NoTitleBar, ImGuiWindowFlags_AlwaysAutoResize, ImGuiWindowFlags_NoCollapse)
@@ -3517,6 +3908,7 @@ local function draw_config()
             elseif tab == 'rolls' then UI.tab_rolls(W)
             elseif tab == 'range' then UI.tab_range(W)
             elseif tab == 'size' then UI.tab_size(W)
+            elseif tab == 'auto' then UI.tab_auto(W)
             else UI.tab_debug(W) end
             imgui.Spacing()
             local foot = ('v%s  -  by Jboor'):format(addon.version)
@@ -3647,6 +4039,7 @@ local HELP = {
     '/nard show | hide',
     '/nard reset - default position',
     '/nard log - debug log',
+    '/nard auto [on|off] - auto rolls + song',
     '/nard debug [on|off] - verbose tracing',
 }
 
@@ -3700,6 +4093,11 @@ ashita.events.register('command', 'nard_command', function (e)
         state.reset_pos = true
     elseif sub == 'log' then
         state.log_win.open = not state.log_win.open
+    elseif sub == 'auto' then
+        local a = (args[3] or ''):lower()
+        local on = (a == 'on') or (a ~= 'off' and not cfg.auto_on)
+        AUTO.toggle(on)
+        msg('Auto ' .. (on and 'ON' or 'OFF'))
     elseif sub == 'debug' then
         local a = (args[3] or ''):lower()
         if a == 'on' then cfg.verbose = true

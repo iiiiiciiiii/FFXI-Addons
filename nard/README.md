@@ -16,6 +16,7 @@ Floating **Corsair roll tracker** for Ashita v4 — Phoenix (level 75). by Jboor
 - Real buff check: a roll that wears off early is removed
 - Tips: short advice for your own rolls (after a bust, safe or risky Double-Up, lucky / unlucky, a roll about to wear off, Phantom Roll ready)
 - Hides itself after a few minutes out of a party, back as soon as you join one
+- Auto tab (optional, off by default): keeps your 4 rolls and one sub BRD song up, Double-Up rules, follows a camp anchor only when needed. Check your server's rules before using automation.
 - Separate pieces mode, minimize pill, settings window, debug log
 - Rolls kept across reloads
 
@@ -42,6 +43,7 @@ Copy the `nard` folder (`nard.lua`, `rolls.lua`, `dlog.lua`) into `Ashita/addons
 | `/nard show` / `hide` | show / hide |
 | `/nard reset` | default position |
 | `/nard log` | debug log |
+| `/nard auto [on\|off]` | auto rolls + song |
 | `/nard debug [on\|off]` | verbose tracing |
 
 Logs are saved to `Ashita/logs/nard/`.
