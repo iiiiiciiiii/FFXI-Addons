@@ -24,7 +24,7 @@
 
 addon.name    = 'nard'
 addon.author  = 'Jboor'
-addon.version = '1.6.1'
+addon.version = '1.6.2'
 addon.desc    = 'Floating Corsair roll tracker (Phoenix Lv75)'
 addon.link    = ''
 
@@ -324,7 +324,7 @@ end
 -- a different effect from a Chaos Roll on the mages).
 local function find_entry(actor, name, targets)
     for _, e in ipairs(state.active) do
-        if e.actor == actor and e.def.name == name and overlaps(e.targets, targets) then return e end
+        if e.actor == actor and e.def.name == name and not e.busted and overlaps(e.targets, targets) then return e end
     end
     return nil
 end
@@ -426,7 +426,7 @@ local function enforce_cap(actor)
     while true do
         local count, oldest = 0, nil
         for _, e in ipairs(state.active) do
-            if e.actor == actor then
+            if e.actor == actor and not e.busted then      -- a bust stays until it wears off
                 count = count + 1
                 if oldest == nil or e.started < oldest.started then oldest = e end
             end
@@ -2010,6 +2010,62 @@ local function draw_cd_pill(dl, wx, wy, x, y, S, t, cd, rem, mode)
     return W0, H0
 end
 
+
+-- Your current bust (newest), if the Bust status is still on you
+local function my_bust()
+    local now, best = os.time(), nil
+    for _, e in ipairs(state.active) do
+        if e.mine and e.busted and now < e.started + ROLL_DURATION then
+            if best == nil or e.started > best.started then best = e end
+        end
+    end
+    return best
+end
+
+-- red "BUSTED" pill: [x die] BUSTED  -6% EXP ....... 3:12   (centered in W); returns height
+local function draw_bust_pill(dl, wx, wy, x, y, W, S, t, e)
+    local pen  = rolls.bust_text(e.def)
+    local left = fmt_time(e.started + ROLL_DURATION - os.time())
+    local w = 6 * S + 12 * S + 6 * S + text_size('BUSTED', 0.62 * S) + 8 * S + text_size(pen, 0.70 * S) + 10 * S + text_size('0:00', 0.78 * S) + 9 * S
+    w = math.max(w, cd_pill_width(S, CDS.pr.label))
+    local h = 20 * S
+    local px = x + (W - w) / 2
+    local x0, y0 = wx + px, wy + y
+    local p = 0.5 + 0.5 * math.sin(t * 2.0)
+    for k = 3, 1, -1 do
+        local g = k * 2.5 * S
+        dl:AddRectFilled({ x0 - g, y0 - g }, { x0 + w + g, y0 + h + g }, col32({ 1.0, 0.30, 0.28, (0.03 + 0.03 * p) * (4 - k) }), h / 2 + g)
+    end
+    dl:AddRectFilled({ x0, y0 }, { x0 + w, y0 + h }, col32({ 0.24, 0.05, 0.05, 0.92 }), h / 2)
+    dl:AddRect({ x0, y0 }, { x0 + w, y0 + h }, col32({ 1.0, 0.38, 0.34, 0.60 + 0.25 * p }), h / 2, ROUND_ALL, 1.2)
+    -- little red die with an X
+    local is = 12 * S
+    local ix, iy = x0 + 6 * S, y0 + (h - is) / 2
+    dl:AddRectFilled({ ix, iy }, { ix + is, iy + is }, col32({ 0.55, 0.12, 0.12, 1 }), is * 0.25)
+    dl:AddLine({ ix + is * 0.28, iy + is * 0.28 }, { ix + is * 0.72, iy + is * 0.72 }, col32({ 1, 0.85, 0.83, 1 }), 1.6 * S)
+    dl:AddLine({ ix + is * 0.28, iy + is * 0.72 }, { ix + is * 0.72, iy + is * 0.28 }, col32({ 1, 0.85, 0.83, 1 }), 1.6 * S)
+    local tx = px + 6 * S + is + 6 * S
+    local _, lh = text_size('A', 0.62 * S)
+    text_at(tx, y + (h - lh) / 2, { 1.0, 0.62, 0.58, 1 }, 'BUSTED', 0.62 * S, false)
+    tx = tx + text_size('BUSTED', 0.62 * S) + 8 * S
+    local _, ph = text_size(pen, 0.70 * S)
+    text_at(tx, y + (h - ph) / 2, { 1.0, 0.85, 0.82, 1 }, pen, 0.70 * S, false)
+    local tw, th = text_size(left, 0.78 * S)
+    text_at(px + w - 9 * S - tw, y + (h - th) / 2, { 1.0, 0.85, 0.82, 1 }, left, 0.78 * S, false)
+    if not state.no_hit then
+        imgui.SetCursorPos({ px, y })
+        imgui.InvisibleButton('##nard_bust', { w, h })
+        if imgui.IsItemHovered() then
+            imgui.BeginTooltip()
+            imgui.TextColored(C.red, ('Busted %s%s'):format(e.def.name, e.bust_total and (' at ' .. e.bust_total) or ''))
+            imgui.TextColored(C.cream, ('Penalty %s  -  wears off in %s'):format(pen, left))
+            imgui.TextColored(C.dim, 'It still takes one of your roll slots until it wears off.')
+            imgui.EndTooltip()
+        end
+    end
+    return h
+end
+
 -- Phantom Roll on top, Double-Up underneath (each its own pill), centered in W; returns height
 local function draw_cd_row(dl, wx, wy, x, y, W, S, t)
     local prr = cd_update(CDS.pr, t)
@@ -2673,6 +2729,7 @@ local function draw_overlay_full(list, now)
         W = math.max(W, text_size(EMPTY, 0.85 * S) + 28 * S)
     end
     if cfg.show_cd then W = math.max(W, cd_row_width(S * sz('s_cd')) + 8 * S) end
+    if cfg.show_cd and my_bust() then W = math.max(W, cd_pill_width(S * sz('s_cd'), CDS.pr.label) + 68 * S * sz('s_cd')) end
     local tip = current_tip(anim_time())
     local St  = S * sz('s_tip')
     if tip then W = math.max(W, tip_lines_width(tip, St) + 8 * S) end
@@ -2721,6 +2778,8 @@ local function draw_overlay_full(list, now)
     local y = by + r * 2 + 10 * S
     if cfg.show_cd then
         local ph = draw_cd_row(dl, wx, wy, bx, y - 6 * S, W, S * sz('s_cd'), t)
+        local be = my_bust()
+        if be then ph = ph + 6 * S + draw_bust_pill(dl, wx, wy, bx, y - 6 * S + ph + 6 * S, W, S * sz('s_cd'), t, be) end
         y = y - 6 * S + ph + ((#rows > 0) and 18 * S or 4 * S)
     end
     if rc then
@@ -2855,10 +2914,10 @@ end
 -- Right-click a piece -> unlock / lock / reset / join back.
 ----------------------------------------------------------------------------
 local PIECE_NAME = {
-    pr = 'Phantom Roll cooldown', du = 'Double-Up cooldown', tips = 'Tips', range = 'Party range',
+    pr = 'Phantom Roll cooldown', du = 'Double-Up cooldown', bust = 'Bust warning', tips = 'Tips', range = 'Party range',
     MELEE = 'Melee rolls', MAGES = 'Mage rolls', SELF = 'Your rolls', PARTY = 'Party rolls',
 }
-local PIECE_OFF = { tips = -46, pr = 0, du = 26, range = 54, MELEE = 100, MAGES = 290, SELF = 480, PARTY = 670 }
+local PIECE_OFF = { tips = -46, pr = 0, du = 26, bust = 52, range = 80, MELEE = 126, MAGES = 316, SELF = 506, PARTY = 696 }
 
 local function piece_default(key)
     if key == 'tips' and type(cfg.pieces) == 'table' and type(cfg.pieces.pr) == 'table' and tonumber(cfg.pieces.pr.y) then
@@ -3107,6 +3166,16 @@ local function draw_free_layout(list, now)
                 imgui.Dummy({ w + 6 * S, h + 6 * S + (unlocked and 16 * S or 0) })
             end)
         end
+    end
+    local be = my_bust()
+    if be then
+        piece_window('bust', function (dl, wx, wy, bx, by, hovered, unlocked)
+            local Sc = S * sz('s_cd')
+            local W  = cd_pill_width(Sc, CDS.pr.label) + 60 * Sc
+            local h  = draw_bust_pill(dl, wx, wy, bx + 3 * S, by + 3 * S, W, Sc, anim_time(), be)
+            imgui.SetCursorPos({ bx, by })
+            imgui.Dummy({ W + 6 * S, h + 6 * S + (unlocked and 16 * S or 0) })
+        end)
     end
     local rc = cfg.show_range and range_scan(anim_time()) or nil
     if rc and #rc.members > 0 then
