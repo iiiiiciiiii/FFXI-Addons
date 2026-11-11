@@ -24,7 +24,7 @@
 
 addon.name    = 'nard'
 addon.author  = 'Jboor'
-addon.version = '1.5.2'
+addon.version = '1.6.0'
 addon.desc    = 'Floating Corsair roll tracker (Phoenix Lv75)'
 addon.link    = ''
 
@@ -3209,20 +3209,6 @@ local function opt_checkbox(label, key, tip)
     help_marker('##h_' .. key, tip)
 end
 
-local function size_slider(W, label, key, lo, hi, tip)
-    imgui.PushItemWidth(W - 70)
-    local v = { sz(key) }
-    local changed = imgui.SliderFloat('##sz_' .. key, v, lo, hi, label .. '  %.2f')
-    if changed then cfg[key] = v[1] end
-    -- save when you let go of the slider (or on every change if this build can't tell)
-    local ok, done = pcall(function () return imgui.IsItemDeactivatedAfterEdit() end)
-    if (ok and done) or (not ok and changed) then
-        settings.save()
-        dlog.add('CFG', ('%s size = %.2f'):format(label, sz(key)))
-    end
-    imgui.PopItemWidth()
-    help_marker('##h_sz_' .. key, tip)
-end
 
 -- BeginChild differs between ImGui builds (bool border vs child flags).
 -- Try each form once and remember which one works.
@@ -3262,6 +3248,180 @@ local function place_window(dx, dy)
     imgui.SetNextWindowPos({ x, y }, ImGuiCond_Appearing)
 end
 
+-- Settings window: small tabbed panel (General / Rolls / Range / Sizes / Debug)
+local UI = { LX = 92, TABS = {
+    { 'main', 'General' }, { 'rolls', 'Rolls' }, { 'range', 'Range' }, { 'size', 'Sizes' }, { 'debug', 'Debug' },
+} }
+
+function UI.tabbar(W)
+    local n   = #UI.TABS
+    local gap = 4
+    local tw  = (W - gap * (n - 1)) / n
+    local th  = 20
+    local x0, y0 = imgui.GetCursorPos()
+    local wx, wy = imgui.GetWindowPos()
+    local dl = imgui.GetWindowDrawList()
+    state.cfg_tab = state.cfg_tab or 'main'
+    for i, tab in ipairs(UI.TABS) do
+        local x = x0 + (i - 1) * (tw + gap)
+        imgui.SetCursorPos({ x, y0 })
+        if imgui.InvisibleButton('##tab_' .. tab[1], { tw, th }) then state.cfg_tab = tab[1] end
+        local hov = imgui.IsItemHovered()
+        local on  = (state.cfg_tab == tab[1])
+        local bg  = on and { 0.96, 0.74, 0.26, 0.95 } or (hov and { 0.22, 0.24, 0.31, 1 } or { 0.13, 0.15, 0.20, 1 })
+        dl:AddRectFilled({ wx + x, wy + y0 }, { wx + x + tw, wy + y0 + th }, col32(bg), th / 2)
+        if not on then
+            dl:AddRect({ wx + x, wy + y0 }, { wx + x + tw, wy + y0 + th }, col32({ 0.96, 0.74, 0.26, hov and 0.55 or 0.25 }), th / 2, ROUND_ALL, 1.0)
+        end
+        local lw, lh = text_size(tab[2], 0.86)
+        text_at(x + (tw - lw) / 2, y0 + (th - lh) / 2, on and { 0.12, 0.08, 0.02, 1 } or (hov and C.cream or C.steel), tab[2], 0.86, false)
+    end
+    imgui.SetCursorPos({ x0, y0 + th + 6 })
+    local cx, cy = imgui.GetCursorPos()
+    dl:AddLine({ wx + cx, wy + cy - 2 }, { wx + cx + W, wy + cy - 2 }, col32({ 0.96, 0.74, 0.26, 0.25 }), 1.0)
+    imgui.Dummy({ W, 2 })
+end
+
+function UI.label(txt)
+    pcall(function () imgui.AlignTextToFramePadding() end)
+    imgui.TextColored(C.steel, txt)
+    imgui.SameLine()
+    imgui.SetCursorPosX(UI.LX)
+end
+
+-- label on the left, slider on the right; returns changed, value, finished
+function UI.slider(W, label, id, val, lo, hi, fmt, tip)
+    UI.label(label)
+    imgui.PushItemWidth(W - UI.LX - 14)
+    local v = { val }
+    local changed = imgui.SliderFloat('##' .. id, v, lo, hi, fmt)
+    imgui.PopItemWidth()
+    local ok, done = pcall(function () return imgui.IsItemDeactivatedAfterEdit() end)
+    help_marker('##h_' .. id, tip)
+    return changed, v[1], (ok and done) or (not ok and changed)
+end
+
+function UI.size(W, label, key, lo, hi, tip)
+    local changed, v, fin = UI.slider(W, label, 'sz_' .. key, sz(key), lo, hi, '%.2f', tip)
+    if changed then cfg[key] = v end
+    if fin then
+        settings.save()
+        dlog.add('CFG', ('%s size = %.2f'):format(label, sz(key)))
+    end
+end
+
+function UI.int(W, label, key, def, lo, hi, fmt, tip)
+    local cur = tonumber(cfg[key]) or def
+    local changed, v = UI.slider(W, label, key, cur, lo, hi, fmt(cur), tip)
+    if changed then
+        cfg[key] = math.floor(v + 0.5)
+        settings.save()
+    end
+end
+
+-- a row of evenly sized buttons: { { label, fn }, ... }
+function UI.buttons(W, list)
+    local gap = 6
+    local bw  = (W - gap * (#list - 1)) / #list
+    for i, b in ipairs(list) do
+        if i > 1 then imgui.SameLine(0, gap) end
+        if imgui.Button(b[1], { bw, 0 }) then b[2]() end
+    end
+end
+
+function UI.indent(fn)
+    imgui.Indent(14)
+    fn()
+    imgui.Unindent(14)
+end
+
+function UI.tab_main(W)
+    opt_checkbox('Show overlay', 'visible', 'Show the floating roll dice.')
+    opt_checkbox('Lock position', 'locked', 'Stop the overlay from being dragged.')
+    opt_checkbox('Only on COR', 'cor_only', 'Hide nard and stop tracking unless you are COR. It switches on by itself when you change to COR.')
+    if cfg.cor_only then UI.indent(function () opt_checkbox('or sub COR', 'cor_sub', 'Also switch on when COR is your sub job.') end) end
+    opt_checkbox('Hide when solo', 'solo_hide', 'Hide nard after you have been out of a party for a while. It comes back the moment you join one.')
+    if cfg.solo_hide then
+        UI.int(W, 'After', 'solo_mins', 6, 1, 30, function () return '%.0f min' end,
+            'How long you can be out of a party before nard hides. /nard test still previews while hidden.')
+    end
+    opt_checkbox('Show when empty', 'show_empty', "Show the cooldowns / a small marker while you're COR even with no rolls up.")
+    opt_checkbox('Panel frame', 'panel', 'Dark glass frame behind each row. Off = the dice float freely over the game.')
+    local fv = { cfg.free == true }
+    if imgui.Checkbox('Separate pieces', fv) then set_free(fv[1]) end
+    help_marker('##h_free', 'Each cooldown pill, the tips, the party range and each roll row become their own pieces. Right-click a piece to unlock it, drag it, then right-click > Lock here.')
+    if cfg.free then
+        UI.buttons(W, { { 'Unlock all', function () set_all_pieces(true) end },
+                        { 'Lock all', function () set_all_pieces(false) end },
+                        { 'Reset', reset_layout } })
+    end
+end
+
+function UI.tab_rolls(W)
+    opt_checkbox('Party rolls', 'show_party', "Also show other Corsairs' rolls that land on you.")
+    opt_checkbox('Bust chance', 'show_bust', 'Under your newest roll: chance the next Double-Up busts, and the Double-Up seconds left.')
+    opt_checkbox('Row labels', 'row_labels', 'MELEE / MAGES labels over the rows. Right-click a die to move it to the other row.')
+    opt_checkbox('Show tips', 'show_tips', 'Short advice for your own rolls: after a bust, safe or risky Double-Up, lucky / unlucky, a roll about to wear off, Phantom Roll ready.')
+    opt_checkbox('Roll cooldowns', 'show_cd', 'Phantom Roll and Double-Up recasts. Double-Up turns green only when it is ready AND a Double-Up window is open.')
+    if cfg.show_cd then
+        UI.int(W, 'Warn', 'cd_warn', 5, 0, 15, function (v) return (v < 0.5) and 'off' or '%.0f s before' end,
+            'Soft amber glow on the cooldown pills this many seconds before they are ready. 0 = off.')
+    end
+    imgui.Spacing()
+    UI.buttons(W, { { 'Test', test_rolls },
+                    { 'Clear rolls', function () state.active = {}; state.testing = false; dlog.add('CMD', 'Rolls cleared') end } })
+end
+
+function UI.tab_range(W)
+    opt_checkbox('Party range', 'show_range', 'A mark for each party member - melee on top, mages below. Green = close enough to get your roll, red = too far, grey = away / KO. Hover for name, job and distance.')
+    if not cfg.show_range then return end
+    UI.int(W, 'Range', 'range_base', 8, 4, 20, function () return "%.0f yalms" end,
+        "How far Phantom Roll reaches from you. Doubled automatically while you wear Luzaf's Ring.")
+    UI.label('Style')
+    imgui.PushItemWidth(W - UI.LX - 14)
+    if imgui.BeginCombo('##range_style', RNG.NAME[range_style()]) then
+        for _, k in ipairs(RNG.STYLES) do
+            if imgui.Selectable(RNG.NAME[k], range_style() == k) then
+                cfg.range_style = k
+                settings.save()
+                dlog.add('CFG', 'Range style = ' .. RNG.NAME[k])
+            end
+        end
+        imgui.EndCombo()
+    end
+    imgui.PopItemWidth()
+    help_marker('##h_range_style', 'Dots: small and simple.  Job orbs: glossy balls with the job name.  Crystals: FFXI-style gems.  Distance rings: fills the closer they are, amber near the edge.  Mini radar: members where they really stand.')
+    if range_style() == 'radar' then
+        opt_checkbox('Flip radar', 'radar_flip', 'Turn this on if people in front of you show up behind you on the radar.')
+    end
+end
+
+function UI.tab_size(W)
+    UI.size(W, 'Overall',     'scale',   0.6, 2.0, 'Everything at once. Also: /nard scale 1.2')
+    UI.size(W, 'Dice',        's_die',   0.6, 1.8, 'The dice, their numbers and the LUCKY / UNLUCKY chips.')
+    UI.size(W, 'Roll names',  's_name',  0.6, 1.8, 'The name ribbons above each die.')
+    UI.size(W, 'Effect/time', 's_info',  0.6, 1.8, 'The plate under each die (effect, timer) and the Double-Up pill.')
+    UI.size(W, 'Cooldowns',   's_cd',    0.6, 1.8, 'The Phantom Roll and Double-Up pills.')
+    UI.size(W, 'Effects',     's_fx',    0.3, 1.8, 'Fire, Lucky explosion and the 11 zoom & smash.')
+    UI.size(W, 'Tips',        's_tip',   0.6, 1.8, 'The advice text.')
+    UI.size(W, 'Party range', 's_range', 0.6, 1.8, 'The party range marks.')
+    imgui.Spacing()
+    UI.buttons(W, { { 'Reset sizes', function ()
+        cfg.scale, cfg.s_die, cfg.s_name, cfg.s_info, cfg.s_cd, cfg.s_fx, cfg.s_tip, cfg.s_range = 1, 1, 1, 1, 1, 1, 1, 1
+        settings.save()
+        dlog.add('CFG', 'Sizes reset')
+    end } })
+end
+
+function UI.tab_debug(W)
+    opt_checkbox('Verbose tracing', 'verbose', 'Also record packet / engine traces (roll packets, piece moves, recasts). /nard debug on|off')
+    opt_checkbox('Echo to chat', 'echo', 'Also print every log line to your chat window.')
+    imgui.Spacing()
+    UI.buttons(W, { { 'Open log', function () state.log_win.open = true end },
+                    { 'Save log', function () local f = dlog.save(); if f then msg('Log saved: ' .. f) end end },
+                    { 'Clear log', function () dlog.clear() end } })
+end
+
 local function draw_config()
     local ws = state.cfg_win
     if not ws.open then return end
@@ -3272,128 +3432,22 @@ local function draw_config()
     if imgui.Begin('nard_config', ws.open_tbl, flags) then
         window_header('nard', W, ws)
         if not ws.min then
-            imgui.Separator()
-            opt_checkbox('Show overlay', 'visible', 'Show the floating roll dice.')
-            opt_checkbox('Lock position', 'locked', 'Stop the overlay from being dragged.')
-            opt_checkbox('Party rolls', 'show_party', "Also show other Corsairs' rolls that land on you (blue names).")
-            opt_checkbox('Bust chance', 'show_bust', 'Under your newest roll: chance the next Double-Up busts, and Double-Up seconds left.')
-            opt_checkbox('Row labels', 'row_labels', 'Show MELEE / MAGES labels over each row. Rows are picked from the jobs of the party members each roll hit (WHM BLM RDM BRD SMN = mages).')
-            opt_checkbox('Only on COR', 'cor_only', "Hide nard and stop tracking unless your main job is COR. It switches on by itself when you change to COR.")
-            if cfg.cor_only then
-                opt_checkbox('  ...or sub COR', 'cor_sub', 'Also switch on when COR is your sub job.')
-            end
-            opt_checkbox('Roll cooldowns', 'show_cd', 'Phantom Roll and Double-Up recasts at the top of nard. Double-Up turns green only when it is off cooldown AND a Double-Up window is open; grey means no roll to double.')
-            if cfg.show_cd then
-                imgui.PushItemWidth(W - 70)
-                local wv = { tonumber(cfg.cd_warn) or 5 }
-                if imgui.SliderFloat('##cd_warn', wv, 0, 15, (wv[1] < 0.5) and 'Warning off' or 'Warn %.0f s before') then
-                    cfg.cd_warn = math.floor(wv[1] + 0.5)
-                    settings.save()
-                end
-                imgui.PopItemWidth()
-                help_marker('##h_cd_warn', 'Amber pulsing highlight on the cooldown pills this many seconds before they are ready. 0 = off.')
-            end
-            opt_checkbox('Party range', 'show_range', "Dots for each party member under the cooldowns - melee on top, mages below. Green = close enough to get your roll, red ring = too far, grey = other zone / not nearby / KO. Hover a dot for name, job and distance.")
-            if cfg.show_range then
-                imgui.PushItemWidth(W - 70)
-                local rv = { tonumber(cfg.range_base) or 8 }
-                if imgui.SliderFloat('##range_base', rv, 4, 20, "Roll range %.0f'") then
-                    cfg.range_base = math.floor(rv[1] + 0.5)
-                    settings.save()
-                end
-                imgui.PopItemWidth()
-                help_marker('##h_range_base', "How far Phantom Roll reaches from you, in yalms. Doubled automatically while you wear Luzaf's Ring.")
-                imgui.PushItemWidth(W - 70)
-                if imgui.BeginCombo('##range_style', 'Style: ' .. RNG.NAME[range_style()]) then
-                    for _, k in ipairs(RNG.STYLES) do
-                        if imgui.Selectable(RNG.NAME[k], range_style() == k) then
-                            cfg.range_style = k
-                            settings.save()
-                            dlog.add('CFG', 'Range style = ' .. RNG.NAME[k])
-                        end
-                    end
-                    imgui.EndCombo()
-                end
-                imgui.PopItemWidth()
-                help_marker('##h_range_style', 'Dots: small and simple.  Job orbs: glossy balls with the job name.  Crystals: FFXI-style gems.  Distance rings: a ring that fills the closer they are, with yalms (amber near the edge).  Mini radar: you in the middle, members where they really stand.')
-                if range_style() == 'radar' then
-                    opt_checkbox('Flip radar', 'radar_flip', 'Turn this on if people in front of you show up behind you on the radar.')
-                end
-            end
-            opt_checkbox('Show tips', 'show_tips', 'Short advice under the cooldowns for your own rolls: after a bust, when Double-Up is safe or risky, lucky / unlucky numbers, a roll about to wear off, and when Phantom Roll is ready for another roll.')
-            opt_checkbox('Hide when solo', 'solo_hide', 'Hide nard completely after you have been out of a party for the time below. It comes back the moment you join a party (or alliance).')
-            if cfg.solo_hide then
-                imgui.PushItemWidth(W - 70)
-                local mv = { tonumber(cfg.solo_mins) or 6 }
-                if imgui.SliderFloat('##solo_mins', mv, 1, 30, 'after %.0f min solo') then
-                    cfg.solo_mins = math.floor(mv[1] + 0.5)
-                    settings.save()
-                end
-                imgui.PopItemWidth()
-                help_marker('##h_solo_mins', 'How long you can be out of a party before nard hides. /nard test still previews while hidden.')
-            end
-            opt_checkbox('Panel frame', 'panel', 'Draw a dark glass frame behind each row. Off = the dice float freely over the game, with outlined text.')
-            opt_checkbox('Show when empty', 'show_empty', "While you're COR (main or sub), show a small 'Phantom Roll' marker when no rolls are up.")
-
             imgui.Spacing()
-            imgui.TextColored(C.gold, 'Sizes')
-            help_marker('##h_sizes', 'Each part has its own size. Overall scales everything; the others multiply on top of it.')
-            size_slider(W, 'Overall',        'scale',  0.6, 2.0, 'Everything at once. Also: /nard scale 1.2')
-            size_slider(W, 'Dice',           's_die',  0.6, 1.8, 'The dice, their numbers and the LUCKY / UNLUCKY chips.')
-            size_slider(W, 'Roll names',     's_name', 0.6, 1.8, 'The name ribbons above each die.')
-            size_slider(W, 'Effect & timer', 's_info', 0.6, 1.8, 'The plate under each die (effect value, timer) and the Double-Up pill.')
-            size_slider(W, 'Cooldowns',      's_cd',   0.6, 1.8, 'The Phantom Roll and Double-Up cooldown pills at the top.')
-            size_slider(W, 'Effects',        's_fx',   0.3, 1.8, 'Fire height, Lucky explosion and the 11 zoom & smash.')
-            size_slider(W, 'Tips',           's_tip',  0.6, 1.8, 'The advice text under the cooldowns.')
-            size_slider(W, 'Party range',    's_range', 0.6, 1.8, 'The party range dots.')
-            if imgui.Button('Reset sizes', { 100, 0 }) then
-                cfg.scale, cfg.s_die, cfg.s_name, cfg.s_info, cfg.s_cd, cfg.s_fx, cfg.s_tip, cfg.s_range = 1, 1, 1, 1, 1, 1, 1, 1
-                settings.save()
-                dlog.add('CFG', 'Sizes reset')
-            end
-
+            UI.tabbar(W)
             imgui.Spacing()
-            imgui.TextColored(C.gold, 'Layout')
-            help_marker('##h_layout', 'Separate pieces: the Phantom Roll pill, the Double-Up pill and each roll row (MELEE / MAGES / ...) become their own pieces. Right-click any piece to unlock it, drag it, then right-click > Lock here.')
-            local fv = { cfg.free == true }
-            if imgui.Checkbox('Separate pieces', fv) then set_free(fv[1]) end
-            if cfg.free then
-                if imgui.Button('Unlock all', { 74, 0 }) then set_all_pieces(true) end
-                imgui.SameLine()
-                if imgui.Button('Lock all', { 64, 0 }) then set_all_pieces(false) end
-                imgui.SameLine()
-                if imgui.Button('Reset', { 50, 0 }) then reset_layout() end
-                help_marker('##h_reset', 'Reset puts every piece back in a stack under the overlay position. Right-click a single piece to reset just that one.')
-            end
-
+            local tab = state.cfg_tab or 'main'
+            if tab == 'main' then UI.tab_main(W)
+            elseif tab == 'rolls' then UI.tab_rolls(W)
+            elseif tab == 'range' then UI.tab_range(W)
+            elseif tab == 'size' then UI.tab_size(W)
+            else UI.tab_debug(W) end
             imgui.Spacing()
-            imgui.TextColored(C.gold, 'Debug')
-            help_marker('##h_debug', 'Everything nard does is written to the debug log. Commands: /nard log, /nard debug on|off')
-            opt_checkbox('Verbose (debug) tracing', 'verbose', 'Also record packet / engine traces (every roll packet with ids and message numbers, piece moves, recasts).')
-            opt_checkbox('Echo to chat', 'echo', 'Also print every log line to your chat window.')
-            if imgui.Button('Open log', { 74, 0 }) then state.log_win.open = true end
-            imgui.SameLine()
-            if imgui.Button('Save log', { 74, 0 }) then
-                local f = dlog.save()
-                if f then msg('Log saved: ' .. f) end
-            end
-            imgui.SameLine()
-            if imgui.Button('Clear log', { 74, 0 }) then dlog.clear() end
-
-            imgui.Spacing()
-            if imgui.Button('Test', { 56, 0 }) then test_rolls() end
-            help_marker('##h_test', 'Preview with fake rolls. Click again to cycle: 4 rolls (melee + mages), 2 rolls with Double-Up, 11 + Bust.')
-            imgui.SameLine()
-            if imgui.Button('Clear', { 56, 0 }) then
-                state.active = {}
-                state.testing = false
-                dlog.add('CMD', 'Rolls cleared')
-            end
-            imgui.SameLine()
-            if imgui.Button('Log', { 48, 0 }) then state.log_win.open = not state.log_win.open end
-
-            imgui.Spacing()
-            imgui.TextColored(C.dim, 'by Jboor')
+            local foot = ('v%s  -  by Jboor'):format(addon.version)
+            local fw = text_size(foot, 0.8)
+            imgui.SetCursorPosX(imgui.GetCursorPosX() + W - fw)
+            local fx, fy = imgui.GetCursorPos()
+            text_at(fx, fy, C.dim, foot, 0.8, false)
+            imgui.Dummy({ fw, 12 })
         end
     end
     imgui.End()
