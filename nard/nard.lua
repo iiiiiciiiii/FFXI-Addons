@@ -24,7 +24,7 @@
 
 addon.name    = 'nard'
 addon.author  = 'Jboor'
-addon.version = '1.7.2'
+addon.version = '1.7.3'
 addon.desc    = 'Floating Corsair roll tracker (Phoenix Lv75)'
 addon.link    = ''
 
@@ -789,9 +789,13 @@ local function tick()
         restore_rolls()
         verify_buffs(now)
         save_rolls(false)
-        if cfg.auto_on and main_is_cor() and AUTO.step then
-            local ok, err = pcall(AUTO.step, anim_time())
-            if not ok then dlog.add('ERR', 'Auto: ' .. tostring(err)) end
+        if cfg.auto_on and AUTO.step then
+            if main_is_cor() then
+                local ok, err = pcall(AUTO.step, anim_time())
+                if not ok then dlog.add('ERR', 'Auto: ' .. tostring(err)) end
+            else
+                AUTO.set('Waiting - COR must be your main job')
+            end
         end
     end
     for i = #state.active, 1, -1 do
@@ -3371,7 +3375,7 @@ AUTO.SLOTS = { { 'auto_r1', 'MELEE' }, { 'auto_r2', 'MELEE' }, { 'auto_r3', 'MAG
 function AUTO.set(s)
     if s ~= AUTO.status then
         AUTO.status = s
-        dlog.add('AUTO', s, true)
+        dlog.add('AUTO', s)          -- every decision is logged (only when it changes)
     end
 end
 
@@ -4006,7 +4010,7 @@ end
 -- events
 ----------------------------------------------------------------------------
 ashita.events.register('load', 'nard_load', function ()
-    dlog.add('INFO', ('nard v%s loaded'):format(addon.version))
+    dlog.add('INFO', ('nard v%s loaded - Auto is %s'):format(addon.version, cfg.auto_on and 'ON' or 'OFF'))
 end)
 
 ashita.events.register('unload', 'nard_unload', function ()
