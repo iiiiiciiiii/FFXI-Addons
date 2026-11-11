@@ -24,7 +24,7 @@
 
 addon.name    = 'nard'
 addon.author  = 'Jboor'
-addon.version = '1.7.1'
+addon.version = '1.7.2'
 addon.desc    = 'Floating Corsair roll tracker (Phoenix Lv75)'
 addon.link    = ''
 
@@ -3519,21 +3519,22 @@ function AUTO.song_due(now)
     return nil
 end
 
--- stay at camp: follow the anchor when far, stop once you're next to them and they stand still
+-- Only ever moves for a roll or the song: once you're close enough, stop and stand still.
 function AUTO.camp(t)
+    if not AUTO.following then return end
     local m = AUTO.member(cfg.auto_follow)
-    if m == nil or m.dist == nil then return end
-    if AUTO.anchor_x == nil or math.abs(m.x - AUTO.anchor_x) + math.abs(m.y - AUTO.anchor_y) > 0.4 then
-        AUTO.anchor_x, AUTO.anchor_y, AUTO.anchor_still = m.x, m.y, t
+    if m == nil or m.dist == nil then AUTO.stop_follow('lost ' .. tostring(cfg.auto_follow)); return end
+    if m.dist <= (tonumber(cfg.auto_camp) or 3) + 0.5 then
+        AUTO.stop_follow('next to ' .. cfg.auto_follow)
     end
-    local camp = tonumber(cfg.auto_camp) or 3
-    if AUTO.following then
-        if m.dist <= camp + 0.5 and t - (AUTO.anchor_still or t) >= 1.5 then
-            AUTO.stop_follow('at camp next to ' .. cfg.auto_follow)
-        end
-    elseif m.dist > camp + 8 then
-        AUTO.follow(cfg.auto_follow, ('%s is %d\' away'):format(cfg.auto_follow, math.floor(m.dist)))
-    end
+end
+
+-- true if you're already close enough to the camp person (or none is set)
+function AUTO.near_anchor()
+    if cfg.auto_follow == nil or cfg.auto_follow == '' then return true end
+    local m = AUTO.member(cfg.auto_follow)
+    if m == nil or m.dist == nil then return true end
+    return m.dist <= (tonumber(cfg.auto_camp) or 3) + 0.5
 end
 
 function AUTO.track_move(t)
@@ -3592,16 +3593,23 @@ function AUTO.step(t)
             AUTO.busy_until = t + 2.5
             return AUTO.set('Rolled ' .. due.name)
         end
-        if cfg.auto_follow ~= nil and cfg.auto_follow ~= '' then
+        if cfg.auto_follow ~= nil and cfg.auto_follow ~= '' and not AUTO.near_anchor() then
             AUTO.follow(cfg.auto_follow, ('%s due, only %d/%d %s in range'):format(due.name, inn, n, due.group:lower()))
-            return AUTO.set(('Moving to camp for %s (%d/%d in range)'):format(due.name, inn, n))
+            AUTO.camp(t)
+            return AUTO.set(('Moving to %s for %s (%d/%d in range)'):format(cfg.auto_follow, due.name, inn, n))
         end
+        if AUTO.following then AUTO.stop_follow('next to ' .. cfg.auto_follow) end
         return AUTO.set(('Waiting - %s out of range for %s'):format(due.group:lower(), due.name))
     end
 
     -- 3) song
     local song, why = AUTO.song_due(now)
     if song then
+        if not AUTO.near_anchor() then
+            AUTO.follow(cfg.auto_follow, song.n .. ' due')
+            AUTO.camp(t)
+            return AUTO.set(('Moving to %s to sing %s'):format(cfg.auto_follow, song.n))
+        end
         if AUTO.following then AUTO.stop_follow('singing'); AUTO.busy_until = t + 0.6; return end
         AUTO.cmd(('/ma "%s" <me>'):format(song.n), why)
         AUTO.busy_until = t + 9
@@ -3615,7 +3623,7 @@ function AUTO.step(t)
         return AUTO.set(('Next: %s when Phantom Roll is ready'):format(due.name))
     end
     if waiting then return AUTO.set(('Waiting for %s to wear off you before rolling it again'):format(waiting)) end
-    AUTO.set(AUTO.following and ('Following ' .. cfg.auto_follow) or 'Watching - all rolls up')
+    AUTO.set(AUTO.following and ('Walking to ' .. cfg.auto_follow) or 'Standing still - all rolls up')
 end
 
 function AUTO.toggle(on)
@@ -3889,7 +3897,7 @@ function UI.tab_auto(W)
     end)
     UI.combo(W, 'Follow', 'auto_follow', cfg.auto_follow, names, function (v)
         cfg.auto_follow = v; settings.save(); dlog.add('CFG', 'auto follow = ' .. (v == '' and 'None' or v))
-    end, 'Who to stay with at camp. nard follows them only when a roll is due and the group is out of range, or when they move far away, then stops once you are next to them and they stand still.')
+    end, 'Who to walk to. nard only moves when a roll or the song is due and you are too far: it follows them until you are close, does the roll / song, and stands still the rest of the time.')
     UI.int(W, 'Stop at', 'auto_camp', 3, 1, 8, function () return "%.0f' from them" end,
         'How close to get before standing still.')
 
