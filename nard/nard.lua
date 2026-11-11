@@ -24,7 +24,7 @@
 
 addon.name    = 'nard'
 addon.author  = 'Jboor'
-addon.version = '1.6.0'
+addon.version = '1.6.1'
 addon.desc    = 'Floating Corsair roll tracker (Phoenix Lv75)'
 addon.link    = ''
 
@@ -2397,9 +2397,9 @@ end
 
 -- per-style spacing / row height
 local function style_metrics(st, S)
-    if st == 'orbs' then return 26 * S, 26 * S end
+    if st == 'orbs' then return 30 * S, 32 * S end
     if st == 'crystals' then return 22 * S, 26 * S end
-    if st == 'rings' then return 26 * S, 34 * S end
+    if st == 'rings' then return 34 * S, 46 * S end
     return 16 * S, 18 * S
 end
 
@@ -2425,7 +2425,7 @@ local function arc(dl, cx, cy, r, a0, a1, col, th)
 end
 
 local function draw_orb(dl, wx, wy, cx, cy, S, mbr, ok, t, i)
-    local scx, scy, r = wx + cx, wy + cy, 10.5 * S
+    local scx, scy, r = wx + cx, wy + cy, 12.5 * S
     local p = 0.5 + 0.5 * math.sin(t * 2.0 + i)
     if ok then
         dl:AddCircleFilled({ scx, scy }, r + 5 * S, col32({ RNG.GREEN[1], RNG.GREEN[2], RNG.GREEN[3], 0.08 + 0.06 * p }), 20)
@@ -2437,7 +2437,7 @@ local function draw_orb(dl, wx, wy, cx, cy, S, mbr, ok, t, i)
     dl:AddCircleFilled({ scx - r * 0.3, scy - r * 0.42 }, r * 0.42, col32(ok and { 0.86, 1, 0.88, 0.45 } or { 1, 1, 1, 0.12 }), 14)
     dl:AddCircle({ scx, scy }, r, col32(ok and { 0.60, 0.95, 0.69, 1 } or { 1.0, 0.47, 0.43, 0.85 }), 20, ok and 1.3 or 1.6)
     if not mbr.dist then dl:AddCircle({ scx, scy }, r, col32({ 0.55, 0.58, 0.65, 0.9 }), 20, 1.6) end
-    centered_text(cx, cy + 0.5, ok and { 1, 1, 1, 1 } or { 1.0, 0.62, 0.58, 1 }, JOB_ABBR[mbr.job] or '?', 0.58 * S, true)
+    centered_text(cx, cy + 0.5, ok and { 1, 1, 1, 1 } or { 1.0, 0.70, 0.66, 1 }, JOB_ABBR[mbr.job] or '?', 0.78 * S, true)
     return r
 end
 
@@ -2462,32 +2462,40 @@ local function draw_crystal(dl, wx, wy, cx, cy, S, mbr, ok, t, i)
 end
 
 local function draw_dist_ring(dl, wx, wy, cx, cy, S, mbr, ok, t, i, R)
-    local scx, scy, r = wx + cx, wy + cy, 9 * S
-    dl:AddCircle({ scx, scy }, r, col32({ 1, 1, 1, 0.12 }), 24, 3 * S)
+    local scx, scy, r = wx + cx, wy + cy, 12.5 * S
     local d = mbr.dist
     local cc
     if not d then cc = { 0.55, 0.58, 0.65 }
     elseif d <= R then cc = (d > R * 0.75) and { 1.0, 0.79, 0.36 } or RNG.GREEN
     else cc = { 1.0, 0.43, 0.39 } end
-    local f = d and math.max(0.08, math.min(1, 1 - d / (R * 1.6))) or 0.08
-    arc(dl, scx, scy, r, -math.pi / 2, -math.pi / 2 + math.pi * 2 * f, col32({ cc[1], cc[2], cc[3], 0.95 }), 3 * S)
-    dl:AddCircleFilled({ scx, scy }, r - 4 * S, col32((d and d <= R) and { cc[1], cc[2], cc[3], 0.9 } or { 0.16, 0.17, 0.22, 0.9 }), 16)
-    local txt = d and ('%d\''):format(math.floor(d + 0.5)) or '--'
-    centered_text(cx, cy + r + 7 * S, (d and d <= R) and { 0.91, 1, 0.91, 1 } or { 1.0, 0.60, 0.57, 1 }, txt, 0.56 * S, true)
+    local p = 0.5 + 0.5 * math.sin(t * 2.0 + i)
+    if d and d <= R then
+        dl:AddCircleFilled({ scx, scy }, r + 4 * S, col32({ cc[1], cc[2], cc[3], 0.10 + 0.06 * p }), 24)
+    end
+    dl:AddCircleFilled({ scx, scy + 1.5 * S }, r + 1 * S, col32({ 0, 0, 0, 0.45 }), 24)    -- shadow
+    dl:AddCircleFilled({ scx, scy }, r, col32({ 0.06, 0.07, 0.10, 0.92 }), 24)              -- dark base
+    dl:AddCircleFilled({ scx, scy }, r - 3.5 * S, col32({ cc[1] * 0.35, cc[2] * 0.35, cc[3] * 0.35, 0.95 }), 24)
+    dl:AddCircle({ scx, scy }, r - 1.8 * S, col32({ 1, 1, 1, 0.10 }), 32, 3 * S)            -- track
+    local f = d and math.max(0.06, math.min(1, 1 - d / (R * 1.6))) or 0.06
+    arc(dl, scx, scy, r - 1.8 * S, -math.pi / 2, -math.pi / 2 + math.pi * 2 * f, col32({ cc[1], cc[2], cc[3], 1 }), 3.2 * S)
+    local txt = d and tostring(math.floor(d + 0.5)) or '-'
+    centered_text(cx, cy + 0.5, { 1, 1, 1, 1 }, txt, 0.95 * S, true)
+    centered_text(cx, cy + r + 8 * S, { cc[1] * 0.6 + 0.4, cc[2] * 0.6 + 0.4, cc[3] * 0.6 + 0.4, 1 }, JOB_ABBR[mbr.job] or '?', 0.78 * S, true)
     return r
 end
 
 -- one group row for the dot-like styles
 local function draw_range_row(dl, wx, wy, x, y, W, S, t, g, gi, st, R)
     local tint = g.tint
-    local lw = text_size(g.label, 0.64 * S)
+    local LS, CS = 0.80 * S, 0.90 * S
+    local lw = text_size(g.label, LS)
     local dotw, rowh = style_metrics(st, S)
-    local total = lw + 16 * S + #g.list * dotw + text_size('0/0', 0.72 * S) + 6 * S
+    local total = lw + 16 * S + #g.list * dotw + text_size('0/0', CS) + 6 * S
     local x0 = x + (W - total) / 2
-    local cy = y + (gi - 1) * rowh + rowh / 2 - ((st == 'rings') and 4 * S or 0)
+    local cy = y + (gi - 1) * rowh + rowh / 2 - ((st == 'rings') and 6 * S or 0)
     dl:AddCircleFilled({ wx + x0 + 3 * S, wy + cy }, 2 * S, col32({ tint[1], tint[2], tint[3], 1 }), 10)
-    local _, lh = text_size(g.label, 0.64 * S)
-    text_at(x0 + 8 * S, cy - lh / 2, { tint[1], tint[2], tint[3], 1 }, g.label, 0.64 * S, true)
+    local _, lh = text_size(g.label, LS)
+    text_at(x0 + 8 * S, cy - lh / 2, { tint[1], tint[2], tint[3], 1 }, g.label, LS, true)
     local dx = x0 + lw + 16 * S
     local inn = 0
     for i, mbr in ipairs(g.list) do
@@ -2503,8 +2511,8 @@ local function draw_range_row(dl, wx, wy, x, y, W, S, t, g, gi, st, R)
     end
     local cnt = ('%d/%d'):format(inn, #g.list)
     local cc = (inn == #g.list) and C.green or ((inn == 0) and C.red or { 1.0, 0.79, 0.36, 1 })
-    local _, ch = text_size(cnt, 0.72 * S)
-    text_at(dx + #g.list * dotw + 4 * S, cy - ch / 2, cc, cnt, 0.72 * S, true)
+    local _, ch = text_size(cnt, CS)
+    text_at(dx + #g.list * dotw + 4 * S, cy - ch / 2, cc, cnt, CS, true)
     return rowh
 end
 
@@ -2586,7 +2594,7 @@ local function range_width(S, rc)
     local dotw = style_metrics(st, S)
     local w = 0
     for _, g in ipairs(range_groups(rc)) do
-        w = math.max(w, text_size(g.label, 0.64 * S) + 16 * S + #g.list * dotw + text_size('0/0', 0.72 * S) + 12 * S)
+        w = math.max(w, text_size(g.label, 0.80 * S) + 16 * S + #g.list * dotw + text_size('0/0', 0.90 * S) + 12 * S)
     end
     return w
 end
