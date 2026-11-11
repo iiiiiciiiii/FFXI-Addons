@@ -24,7 +24,7 @@
 
 addon.name    = 'nard'
 addon.author  = 'Jboor'
-addon.version = '1.7.0'
+addon.version = '1.7.1'
 addon.desc    = 'Floating Corsair roll tracker (Phoenix Lv75)'
 addon.link    = ''
 
@@ -2206,7 +2206,7 @@ local function current_tip(t)
         end
     end
     if soon then
-        return { title = 'RE-ROLL SOON', key = 'reroll:' .. soon.e.def.name,
+        return { title = 'WEARING OFF', key = 'reroll:' .. soon.e.def.name,
                  lines = { ('%s wears off in %s.'):format(soon.e.def.name, fmt_time(soon.left)) }, col = TIP_COL.amber }
     end
 
@@ -3473,9 +3473,13 @@ function AUTO.in_range(group, t)
     return inn, n
 end
 
--- first roll slot that is missing or about to wear off
+-- first roll slot that is missing or about to wear off on its group.
+-- You can't use a roll that is still on YOU, so those wait until it wears off.
+-- returns due (or nil), and the name of a roll that is waiting to wear off
 function AUTO.due_roll(now)
     local _, ml = AUTO.levels()
+    local buffs = my_buffs()
+    local waiting = nil
     for _, slot in ipairs(AUTO.SLOTS) do
         local name = cfg[slot[1]]
         local def  = (type(name) == 'string' and name ~= '') and rolls.by_name[name:lower()] or nil
@@ -3486,11 +3490,15 @@ function AUTO.due_roll(now)
             end
             local left = mine and (mine.started + ROLL_DURATION - now) or -1
             if mine == nil or left <= (tonumber(cfg.auto_reroll) or 30) then
-                return { name = def.name, group = slot[2], why = mine and ('%ds left'):format(left) or 'not up' }
+                if buffs[def.id + 212] then
+                    waiting = waiting or def.name             -- still on you: can't roll it again yet
+                else
+                    return { name = def.name, group = slot[2], why = mine and ('%ds left on them'):format(left) or 'not up' }, waiting
+                end
             end
         end
     end
-    return nil
+    return nil, waiting
 end
 
 -- song that needs singing now, or nil
@@ -3574,7 +3582,7 @@ function AUTO.step(t)
     end
 
     -- 2) rolls
-    local due = AUTO.due_roll(now)
+    local due, waiting = AUTO.due_roll(now)
     if due and ability_recast(PR_RECAST_ID) <= 0 and not (cfg.auto_bust and my_bust()) then
         local inn, n = AUTO.in_range(due.group, t)
         local need = math.min(tonumber(cfg.auto_need) or 1, n)
@@ -3606,6 +3614,7 @@ function AUTO.step(t)
         if cfg.auto_bust and my_bust() then return AUTO.set('Busted - no rolls until it wears off') end
         return AUTO.set(('Next: %s when Phantom Roll is ready'):format(due.name))
     end
+    if waiting then return AUTO.set(('Waiting for %s to wear off you before rolling it again'):format(waiting)) end
     AUTO.set(AUTO.following and ('Following ' .. cfg.auto_follow) or 'Watching - all rolls up')
 end
 
@@ -3849,7 +3858,7 @@ function UI.tab_auto(W)
         end, (slot[2] == 'MELEE') and 'A roll for your melee group.' or 'A roll for your mages group.')
     end
     UI.int(W, 'Re-roll at', 'auto_reroll', 30, 5, 120, function () return '%.0f s left' end,
-        'Re-roll a roll when it has this many seconds left.')
+        "Roll again when it has this many seconds left on its group. You can't use a roll that is still on you, so if it's on you nard waits until it wears off you.")
     UI.int(W, 'Need in range', 'auto_need', 1, 1, 5, function () return 'at least %.0f' end,
         'How many of that group must be in roll range before rolling (fewer if the group is smaller).')
 
